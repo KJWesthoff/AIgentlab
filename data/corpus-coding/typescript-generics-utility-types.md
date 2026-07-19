@@ -1,0 +1,13 @@
+# TypeScript generics and utility types
+
+Generics parameterize functions, classes, and types over the types they operate on, preserving relationships between inputs and outputs: `function first<T>(items: T[]): T | undefined` returns the element type of whatever array it receives. Type arguments are usually inferred from the call (`first([1, 2, 3])` infers `T = number`), so explicit `first<number>(...)` is only needed when inference lacks information.
+
+Generic constraints restrict what a type parameter accepts: `function prop<T, K extends keyof T>(obj: T, key: K): T[K]` says K must be a key of T and the return type is the type of that property — this typed property access pattern appears constantly. `keyof T` is a union of a type's property names, and the indexed access type `T[K]` looks up a property's type. A default gives a fallback: `interface Box<T = string>`.
+
+The built-in utility types transform existing types: `Partial<T>` makes all properties optional (update payloads), `Required<T>` makes them required, `Readonly<T>` forbids reassignment, `Pick<T, "a" | "b">` keeps only chosen keys, `Omit<T, "id">` removes keys (create payloads without server-generated fields), `Record<K, V>` builds an object type with keys K and values V, and `NonNullable<T>` strips null and undefined. For functions, `ReturnType<typeof fn>` and `Parameters<typeof fn>` extract the return and parameter types.
+
+Mapped types generate object types by iterating keys: `{ [K in keyof T]: T[K] | null }` makes every property nullable; modifiers add or remove optionality and readonly (`-?` makes properties required). Combined with `as` key remapping (`[K in keyof T as `get${Capitalize<string & K>}`]: () => T[K]`), mapped types can derive getter interfaces and similar shapes mechanically instead of maintaining them by hand.
+
+Conditional types select types with an extends test: `T extends U ? X : Y`. With `infer`, they extract parts of a type: `type ElementOf<A> = A extends (infer E)[] ? E : never` pulls the element type out of an array type. Conditional types distribute over union members by default, which is how `Exclude<T, U>` (filter a union) and `Extract<T, U>` are implemented in the standard library.
+
+`const` assertions narrow literals: `as const` on an object or array freezes it to readonly literal types (`["a", "b"] as const` has type `readonly ["a", "b"]`, not `string[]`), which enables deriving unions from data: `type Color = (typeof COLORS)[number]` where `COLORS = ["red", "green"] as const`. The `satisfies` operator (TS 4.9+) checks a value against a type without widening it — `config satisfies Config` keeps precise inferred property types while still validating the overall shape.

@@ -1,0 +1,46 @@
+# Logical model profiles. Agents reference these names, never vendor slugs.
+# Swap any `model:` value for another OpenRouter slug without touching code.
+# Browse slugs at https://openrouter.ai/models (the models API can filter by
+# tool support and other parameters).
+
+profiles:
+  economical:
+    provider: openrouter
+    model: google/gemini-2.5-flash-lite
+    capabilities:
+      - text
+      - structured_output
+    limits:
+      maximum_cost_per_call_usd: 0.02
+
+  researcher:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    capabilities:
+      - text
+      - tool_calling
+      - structured_output
+      - long_context
+    limits:
+      maximum_cost_per_call_usd: 0.10
+
+  analyst:
+    provider: openrouter
+    model: anthropic/claude-sonnet-4.5
+    capabilities:
+      - text
+      - structured_output
+      - reasoning
+    limits:
+      maximum_cost_per_call_usd: 0.25
+
+  reviewer:
+    # A different model family than the writer, so the reviewer is less
+    # likely to reproduce the writer's characteristic mistakes.
+    provider: openrouter
+    model: openai/gpt-4o-mini
+    capabilities:
+      - text
+      - structured_output
+    limits:
+      maximum_cost_per_call_usd: 0.08

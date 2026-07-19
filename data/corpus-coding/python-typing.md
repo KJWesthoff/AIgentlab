@@ -1,0 +1,13 @@
+# Python type hints and static typing
+
+Python type hints annotate function signatures and variables (`def greet(name: str) -> str:`) and are not enforced at runtime by the interpreter; they are checked statically by tools such as mypy and pyright. Since Python 3.9 the builtin generics are subscriptable directly (`list[int]`, `dict[str, float]`, `tuple[int, ...]`), so importing `List` and `Dict` from `typing` is legacy style. Since 3.10, unions are written `int | None` instead of `Optional[int]` or `Union[int, None]`.
+
+`Optional[X]` means exactly `X | None` — a value that may be None — not "an optional parameter". A parameter with a default value is not automatically Optional; write the union explicitly. Type checkers use narrowing to handle unions: after `if value is None: return`, the checker knows `value` is not None in the remaining code. `isinstance()` checks, `assert`, and early returns are the standard narrowing tools.
+
+Use `TypedDict` for dictionaries with a known set of string keys and per-key value types, common for JSON payloads: `class Movie(TypedDict): title: str; year: int`. Use `dataclasses.dataclass` for actual data records with attribute access, defaults, and generated `__init__`/`__eq__`/`__repr__`. Pydantic models add runtime validation and JSON parsing on top of type annotations, which plain dataclasses and TypedDicts do not perform.
+
+`Protocol` (from `typing`) enables structural typing, also called static duck typing: any class that has the required methods and attributes satisfies the protocol without inheriting from it. This is the typed answer to "accepts anything with a `.read()` method". Runtime-checkable protocols decorated with `@runtime_checkable` also work with `isinstance()`, checking method presence only, not signatures.
+
+Generics let functions and classes preserve type relationships. Python 3.12 introduced the compact syntax `def first[T](items: list[T]) -> T:` and `class Stack[T]:`. Before 3.12, declare `T = TypeVar("T")` and use `Generic[T]` for classes. Use `Any` to opt out of checking entirely (it silences the checker in both directions), and prefer `object` when you mean "any value, but I will not call methods on it" — `object` stays type-safe, `Any` does not.
+
+Common mypy/pyright errors and fixes: "incompatible types in assignment" usually means a variable was first assigned a narrower type — annotate the variable at first assignment (`items: list[int | str] = []`). "Item 'None' of 'X | None' has no attribute" means a missing None check before use — narrow with `if x is not None:`. For forward references to classes not yet defined, use `from __future__ import annotations`, which makes all annotations lazily evaluated strings.

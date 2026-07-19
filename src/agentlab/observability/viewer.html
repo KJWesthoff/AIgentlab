@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentlab — live trace</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1c2330; --muted: #66707f;
+    --border: #dde1e7; --accent: #2563eb;
+    --system: #7c3aed; --user: #2563eb; --assistant: #059669; --tool: #d97706;
+    --danger: #dc2626; --danger-bg: #fdf0f0; --ok: #059669; --ok-bg: #eefaf4;
+    --warn-bg: #fdf6ec; --code-bg: #f1f3f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1f28; --text: #e6e9ee; --muted: #8b95a5;
+      --border: #2a3140; --accent: #60a5fa;
+      --system: #a78bfa; --user: #60a5fa; --assistant: #34d399; --tool: #fbbf24;
+      --danger: #f87171; --danger-bg: #2a1a1c; --ok: #34d399; --ok-bg: #14251e;
+      --warn-bg: #262115; --code-bg: #12161d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 0.8rem 1.2rem; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { margin: 0; font-size: 1.05rem; display: inline; }
+  #status {
+    display: inline-block; margin-left: 0.6rem; padding: 0.05rem 0.6rem;
+    border-radius: 99px; font-size: 0.78rem; font-weight: 600;
+    background: var(--code-bg); color: var(--muted);
+  }
+  #status.running { background: #2563eb22; color: var(--accent); }
+  #status.completed { background: var(--ok-bg); color: var(--ok); }
+  #status.failed, #status.disconnected { background: var(--danger-bg); color: var(--danger); }
+  #objective { color: var(--muted); margin-top: 0.15rem; font-size: 0.9rem; }
+  #budget { margin-top: 0.3rem; font-size: 0.82rem; color: var(--muted);
+            font-family: ui-monospace, monospace; }
+  .layout {
+    display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 1rem; padding: 1rem 1.2rem; max-width: 1500px; margin: 0 auto;
+  }
+  @media (max-width: 950px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+  .stage { margin-bottom: 1.1rem; }
+  .stage > h2 {
+    font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 0 0 0.45rem;
+    border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.55rem 0.8rem; margin-bottom: 0.5rem;
+  }
+  .card.denied { border-color: var(--danger); background: var(--danger-bg); }
+  .card.banner { background: var(--warn-bg); }
+  .card h3 { margin: 0; font-size: 0.9rem; font-weight: 600; }
+  .meta { color: var(--muted); font-size: 0.8rem; }
+  .badge {
+    display: inline-block; font-size: 0.72rem; font-weight: 600;
+    border-radius: 4px; padding: 0 0.4rem; margin-left: 0.4rem;
+    vertical-align: 1px;
+  }
+  .badge.hard { background: var(--ok-bg); color: var(--ok); }
+  .badge.soft { background: #7c3aed22; color: var(--system); }
+  .badge.untrusted { background: var(--danger-bg); color: var(--danger); }
+  .badge.model { background: var(--code-bg); color: var(--muted); font-weight: 500; }
+  details { margin-top: 0.4rem; }
+  summary { cursor: pointer; font-size: 0.82rem; color: var(--accent); user-select: none; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.5rem 0.65rem; margin: 0.35rem 0 0;
+    font: 0.8rem/1.45 ui-monospace, "Cascadia Code", monospace;
+    white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto;
+    max-height: 24rem; overflow-y: auto;
+  }
+  .msg { border-left: 3px solid var(--border); padding-left: 0.6rem; margin-top: 0.55rem; }
+  .msg.system { border-color: var(--system); }
+  .msg.user { border-color: var(--user); }
+  .msg.assistant { border-color: var(--assistant); }
+  .msg.tool { border-color: var(--tool); }
+  .msg .role { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+  .msg.system .role { color: var(--system); } .msg.user .role { color: var(--user); }
+  .msg.assistant .role { color: var(--assistant); } .msg.tool .role { color: var(--tool); }
+  .untrusted-banner {
+    font-size: 0.75rem; font-weight: 600; color: var(--danger);
+    background: var(--danger-bg); border-radius: 4px;
+    padding: 0.1rem 0.45rem; margin-top: 0.25rem; display: inline-block;
+  }
+  .policy-line { font-size: 0.82rem; margin-bottom: 0.5rem; }
+  .policy-line.ok { color: var(--ok); }
+  .policy-line.denied { color: var(--danger); font-weight: 600; }
+
+  aside .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.9rem;
+  }
+  aside h2 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em;
+             color: var(--muted); margin: 0 0 0.5rem; }
+  aside ul { margin: 0.2rem 0 0.6rem; padding-left: 1.1rem; font-size: 0.82rem; }
+  aside li { margin-bottom: 0.15rem; }
+  .agent-row { font-size: 0.82rem; margin-bottom: 0.45rem; }
+  .agent-row code { background: var(--code-bg); border-radius: 4px; padding: 0 0.3rem;
+                    font-size: 0.78rem; }
+  .counter-grid { display: grid; grid-template-columns: 1fr auto; gap: 0.15rem 0.6rem;
+                  font-size: 0.84rem; }
+  .counter-grid b { font-family: ui-monospace, monospace; font-weight: 600; text-align: right; }
+  .counter-grid b.alert { color: var(--danger); }
+  footer { text-align: center; color: var(--muted); font-size: 0.78rem; padding: 0 0 1.2rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>agentlab — live trace</h1>
+  <span id="status">waiting for run…</span>
+  <div id="objective"></div>
+  <div id="budget"></div>
+</header>
+
+<div class="layout">
+  <main id="stream"></main>
+
+  <aside>
+    <div class="panel">
+      <h2>Agents &amp; tool allowlists <span class="badge hard">hard</span></h2>
+      <div id="agents" class="meta">— appears when the run starts —</div>
+    </div>
+    <div class="panel">
+      <h2>Live counters</h2>
+      <div class="counter-grid">
+        <span>Model calls</span><b id="c-model">0</b>
+        <span>Tool calls executed</span><b id="c-tool">0</b>
+        <span>Untrusted-labeled results</span><b id="c-untrusted">0</b>
+        <span>Policy denials</span><b id="c-denied">0</b>
+        <span>Schema-validated artifacts</span><b id="c-artifacts">0</b>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Security measures</h2>
+      <ul>
+        <li><span class="badge hard">hard</span> per-agent tool allowlist (<code>policy.py</code>)</li>
+        <li><span class="badge hard">hard</span> Pydantic validation of tool args &amp; artifacts</li>
+        <li><span class="badge hard">hard</span> budget caps before every call (<code>state.py</code>)</li>
+        <li><span class="badge hard">hard</span> tool output labeled UNTRUSTED (<code>runtime.py</code>)</li>
+        <li><span class="badge soft">soft</span> researcher must cite a source per claim</li>
+        <li><span class="badge soft">soft</span> analyst/writer restricted to given evidence</li>
+        <li><span class="badge soft">soft</span> independent reviewer, different model family</li>
+      </ul>
+      <div class="meta">Hard checks are enforced in code; soft checks are prompt
+        contracts verified by the reviewer stage.</div>
+    </div>
+  </aside>
+</div>
+<footer>polling <code>/events</code> · agentlab observability</footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const stream = $("stream");
+let lastSeq = 0, currentStage = null, runEnded = false;
+const counters = { model: 0, tool: 0, untrusted: 0, denied: 0, artifacts: 0 };
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function bumpCounter(name) {
+  counters[name] += 1;
+  const cell = $("c-" + name);
+  cell.textContent = counters[name];
+  if (name === "denied") cell.classList.add("alert");
+}
+function setStatus(text, cls) {
+  const s = $("status"); s.textContent = text; s.className = cls || "";
+}
+function stageSection(name) {
+  const section = el("section", "stage");
+  section.appendChild(el("h2", null, name));
+  stream.appendChild(section);
+  currentStage = section;
+  return section;
+}
+function target() { return currentStage || stageSection("run"); }
+function card(title, cls) {
+  const c = el("div", "card" + (cls ? " " + cls : ""));
+  if (title) c.appendChild(el("h3", null, title));
+  target().appendChild(c);
+  return c;
+}
+function detailsBlock(parent, summaryText, open) {
+  const d = el("details");
+  if (open) d.open = true;
+  d.appendChild(el("summary", null, summaryText));
+  parent.appendChild(d);
+  return d;
+}
+function renderMessages(parent, messages, open) {
+  const d = detailsBlock(parent,
+    `Context window — ${messages.length} message${messages.length === 1 ? "" : "s"}`, open);
+  for (const m of messages) {
+    const box = el("div", "msg " + m.role);
+    box.appendChild(el("span", "role", m.role + (m.name ? " · " + m.name : "")));
+    if (m.untrusted) {
+      box.appendChild(el("div", "untrusted-banner",
+        "labeled UNTRUSTED — data, not instructions"));
+    }
+    if (m.content) box.appendChild(el("pre", null, m.content));
+    for (const call of m.tool_calls || []) {
+      box.appendChild(el("pre", null,
+        `→ proposes tool ${call.name}(${JSON.stringify(call.arguments)})`));
+    }
+    d.appendChild(box);
+  }
+}
+function usageLine(usage) {
+  if (!usage) return "";
+  const parts = [];
+  if (usage.input_tokens != null) parts.push(usage.input_tokens + " in");
+  if (usage.output_tokens != null) parts.push(usage.output_tokens + " out");
+  if (usage.estimated_cost != null) parts.push("$" + Number(usage.estimated_cost).toFixed(5));
+  return parts.join(" · ");
+}
+function updateBudget(b) {
+  if (!b) return;
+  $("budget").textContent =
+    `budget: ${b.model_calls}/${b.maximum_model_calls} model calls · ` +
+    `${b.tool_calls}/${b.maximum_tool_calls} tool calls · ` +
+    `${b.input_tokens}+${b.output_tokens} tokens · ` +
+    `$${Number(b.cost_usd).toFixed(4)}/$${Number(b.maximum_cost_usd).toFixed(2)}`;
+}
+
+const handlers = {
+  run_started(e) {
+    setStatus("running", "running");
+    $("objective").textContent = "Objective: " + e.objective;
+    const box = $("agents"); box.textContent = ""; box.classList.remove("meta");
+    for (const agent of e.agents || []) {
+      const row = el("div", "agent-row");
+      row.appendChild(el("b", null, agent.name));
+      const tools = (agent.allowed_tools || []).length
+        ? agent.allowed_tools.join(", ") : "none";
+      const info = el("div", "meta");
+      info.innerHTML = `profile <code></code> · tools: <code></code> · max ${agent.max_calls} calls`;
+      info.querySelectorAll("code")[0].textContent = agent.model_profile;
+      info.querySelectorAll("code")[1].textContent = tools;
+      row.appendChild(info);
+      box.appendChild(row);
+    }
+    updateBudget(e.budget);
+  },
+  stage_started(e) {
+    stageSection(e.stage + " — " + e.agent);
+  },
+  model_call_started(e) {
+    const c = card("model call — " + e.agent);
+    const meta = el("div", "meta",
+      `kind: ${e.call_kind}` +
+      (e.schema ? ` · expects ${e.schema}` : "") +
+      ((e.tools_offered || []).length ? ` · tools offered: ${e.tools_offered.join(", ")}` : ""));
+    c.appendChild(meta);
+    renderMessages(c, e.messages || [], false);
+  },
+  model_call_finished(e) {
+    bumpCounter("model");
+    const c = card("response");
+    const badge = el("span", "badge model", e.model || "model");
+    c.firstChild.appendChild(badge);
+    const usage = usageLine(e.usage);
+    if (usage) c.appendChild(el("div", "meta", usage));
+    for (const call of e.tool_calls || []) {
+      c.appendChild(el("pre", null,
+        `proposes tool ${call.name}(${JSON.stringify(call.arguments)})`));
+    }
+    if (e.text) {
+      const d = detailsBlock(c, "response text", false);
+      d.appendChild(el("pre", null, e.text));
+    }
+    updateBudget(e.budget);
+  },
+  policy_decision(e) {
+    if (e.allowed) {
+      target().appendChild(el("div", "policy-line ok",
+        `✓ policy allowed ${e.tool} (on ${e.agent}'s allowlist, read-only)`));
+    } else {
+      bumpCounter("denied");
+      const c = card("policy denial — " + e.tool, "denied");
+      c.appendChild(el("div", "meta", `agent: ${e.agent}`));
+      c.appendChild(el("pre", null, "Denied by policy: " + (e.reason || "")));
+      c.appendChild(el("div", "meta",
+        "The denial text is fed back to the model as the tool result."));
+    }
+  },
+  tool_result(e) {
+    const c = card("tool result — " + e.tool);
+    if (e.error) {
+      c.firstChild.appendChild(el("span", "badge untrusted", "invalid args"));
+      c.appendChild(el("pre", null, e.error));
+    } else {
+      bumpCounter("tool");
+      if (e.untrusted) {
+        bumpCounter("untrusted");
+        c.firstChild.appendChild(el("span", "badge untrusted", "UNTRUSTED-labeled"));
+      }
+      const d = detailsBlock(c, "result (as the model sees it)", false);
+      d.appendChild(el("pre", null, e.result || ""));
+    }
+    updateBudget(e.budget);
+  },
+  artifact_produced(e) {
+    bumpCounter("artifacts");
+    const c = card("artifact — " + e.artifact_type);
+    c.firstChild.appendChild(el("span", "badge hard", "schema-validated"));
+    const d = detailsBlock(c, "artifact JSON", false);
+    d.appendChild(el("pre", null, JSON.stringify(e.artifact, null, 2)));
+  },
+  draft_produced(e) {
+    const c = card("draft — " + e.agent);
+    const d = detailsBlock(c, `draft text (${e.chars} chars)`, false);
+    d.appendChild(el("pre", null, e.draft || ""));
+  },
+  revision_started(e) {
+    const c = card(`revision ${e.revision} — reviewer rejected the draft`, "banner");
+    c.appendChild(el("pre", null,
+      (e.required_changes || []).map((x) => "• " + x).join("\n")));
+  },
+  run_finished(e) {
+    runEnded = true;
+    setStatus(e.approved ? "completed — approved" : "completed — not approved",
+      "completed");
+    const c = card("final answer" + (e.approved ? " ✓ approved" : " (not approved)"));
+    c.appendChild(el("div", "meta", `revisions: ${e.revisions}`));
+    const d = detailsBlock(c, "answer text", true);
+    d.appendChild(el("pre", null, e.final_answer || ""));
+    updateBudget(e.budget);
+  },
+  run_failed(e) {
+    runEnded = true;
+    setStatus("failed", "failed");
+    const c = card("run failed", "denied");
+    c.appendChild(el("pre", null, e.error || "unknown error"));
+  },
+};
+
+function handle(event) {
+  const handler = handlers[event.event];
+  if (handler) handler(event);
+  lastSeq = Math.max(lastSeq, event.seq || 0);
+}
+
+async function tick() {
+  try {
+    const response = await fetch("/events?after=" + lastSeq);
+    const data = await response.json();
+    const nearBottom =
+      window.innerHeight + window.scrollY >= document.body.offsetHeight - 200;
+    for (const event of data.events || []) handle(event);
+    if (data.events && data.events.length && nearBottom) {
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+    if (!runEnded && $("status").className === "disconnected") {
+      setStatus("running", "running");
+    }
+  } catch {
+    if (!runEnded) setStatus("disconnected — retrying", "disconnected");
+  } finally {
+    setTimeout(tick, 700);
+  }
+}
+tick();
+</script>
+</body>
+</html>

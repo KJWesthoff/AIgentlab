@@ -1,0 +1,13 @@
+# Python data structures and idioms
+
+Choosing a Python collection: `list` is an ordered, mutable sequence with O(1) append and O(n) membership testing; `tuple` is its immutable, hashable counterpart; `set` gives O(1) membership tests, deduplication, and set algebra (union `|`, intersection `&`, difference `-`); `dict` maps hashable keys to values with O(1) lookup and, since Python 3.7, preserves insertion order. For queues, `collections.deque` provides O(1) appends and pops at both ends, whereas `list.pop(0)` is O(n).
+
+Comprehensions are the idiomatic way to build collections from iterables: `[x * 2 for x in nums if x > 0]` for lists, `{k: v for k, v in pairs}` for dicts, `{x.lower() for x in words}` for sets. A generator expression `(x * 2 for x in nums)` produces items lazily without materializing a list, which is the right choice when the result is consumed once, for example inside `sum()`, `any()`, `max()`, or a `join`.
+
+Dictionary idioms: `d.get(key, default)` returns a fallback instead of raising KeyError; `d.setdefault(key, [])` inserts and returns a default in one step; `collections.defaultdict(list)` makes grouping loops clean (`groups[key].append(item)`); `collections.Counter` counts hashable items and offers `.most_common(n)`. Merge dicts with `merged = a | b` (3.9+), where keys in `b` win. Iterate keys and values together with `for key, value in d.items()`.
+
+Sorting: `sorted(iterable)` returns a new list and `list.sort()` sorts in place; both accept `key=` taking a function that extracts a comparison key, e.g. `sorted(users, key=lambda u: u.age)` or `key=operator.itemgetter(1)`. Python's sort is stable, so sorting twice by secondary then primary key produces a correct multi-key sort; `reverse=True` sorts descending. There is no `cmp` argument; convert comparator-style logic with `functools.cmp_to_key`.
+
+Iteration helpers: `enumerate(items, start=0)` yields `(index, item)` pairs and replaces manual counters; `zip(a, b)` pairs elements and stops at the shortest input (`zip(..., strict=True)` on 3.10+ raises on length mismatch); `itertools.chain(a, b)` concatenates iterables lazily; `itertools.islice` slices any iterator; `reversed()` and slicing `seq[::-1]` reverse sequences. Unpacking supports stars: `first, *rest = items` and `f(*args, **kwargs)`.
+
+A classic Python gotcha is the mutable default argument: `def add(item, bucket=[])` shares one list across all calls because the default is evaluated once at function definition. The fix is `bucket=None` plus `if bucket is None: bucket = []` in the body. Similarly, `[[0] * 3] * 2` creates two references to the same inner list; use a comprehension `[[0] * 3 for _ in range(2)]` to get independent rows.

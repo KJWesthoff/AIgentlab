@@ -32,6 +32,7 @@ from agentlab.graph.icons import ICONS, register_icons, write_icons
 from agentlab.graph.ingest import ingest_graph
 from agentlab.graph.model import TAINT_EDGES, EdgeKind, Graph, NodeKind
 from agentlab.graph.queries import (
+    DEMO_ORDER,
     PREFIX,
     QUERIES,
     register_queries,
@@ -1158,3 +1159,42 @@ def test_a_truncated_corpus_records_the_real_document_count():
     )
     assert node.properties["truncated"] is True
     assert node.properties["document_count"] > 5
+
+
+def test_the_demo_sequence_names_real_queries():
+    """A renamed query must break here, not mid-presentation."""
+    names = {q.name for q in QUERIES}
+    assert set(DEMO_ORDER) <= names
+
+
+def test_demo_queries_return_paths_so_edges_render():
+    """BloodHound draws only relationships that are part of a returned path.
+
+    Returning bare nodes (`RETURN a, b, t`) renders as disconnected dots,
+    which is useless for queries whose entire point is the connection —
+    the confused-deputy view shipped that way until a dry run caught it.
+    """
+    by_name = {q.name: q for q in QUERIES}
+    for name in DEMO_ORDER:
+        query = by_name[name].query
+        assert "MATCH p" in query, f"{name!r} should match a path"
+        assert "RETURN p" in query, f"{name!r} should return its path"
+
+
+def test_no_query_reuses_one_relationship_within_a_pattern():
+    """Guards the bug class that silently disabled a security query.
+
+    Cypher forbids traversing the same relationship twice in a single
+    pattern, so `()-[:BackedBy]->(m)<-[:BackedBy]-()` never matched two
+    agents sharing one profile — it returned nothing and looked healthy.
+    Fixed by splitting into separate MATCH clauses; this keeps the shape
+    from coming back.
+    """
+    for saved in QUERIES:
+        for kind in ("BackedBy", "RunsOn", "AllowedToCall", "CanInject"):
+            single_hop = f"-[:{kind}]->"
+            reverse_hop = f"<-[:{kind}]-"
+            for clause in saved.query.split("MATCH"):
+                assert not (
+                    single_hop in clause and reverse_hop in clause
+                ), f"{saved.name!r} traverses {kind} both ways in one pattern"

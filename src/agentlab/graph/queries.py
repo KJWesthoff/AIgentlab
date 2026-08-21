@@ -103,8 +103,11 @@ QUERIES: tuple[SavedQuery, ...] = (
         "Confused deputies: who can steer whose tools",
         "An agent influencing another that holds a tool it was never "
         "granted — the nested-group problem, in agent form.",
-        "MATCH (a:Agent)-[:CanCoerce]->(b:Agent)-[:AllowedToCall]->(t:Tool) "
-        "WHERE NOT (a)-[:AllowedToCall]->(t) RETURN a, b, t",
+        # RETURN p, not the nodes: BloodHound only draws relationships
+        # that are part of a returned path, and the connection is the
+        # entire point of this one.
+        "MATCH p = (a:Agent)-[:CanCoerce]->(b:Agent)-[:AllowedToCall]->"
+        "(t:Tool) WHERE NOT (a)-[:AllowedToCall]->(t) RETURN p",
     ),
     SavedQuery(
         "Tool blast radius — who can reach each tool",
@@ -119,15 +122,29 @@ QUERIES: tuple[SavedQuery, ...] = (
         "Write-capable tools and what guards them",
         "Tools that can change state, with any human-approval gate on the "
         "path. A write tool with no gate is the dangerous shape.",
-        "MATCH (t:Tool) WHERE t.read_only = false "
-        "OPTIONAL MATCH (t)-[:GuardedBy]->(g) RETURN t, g",
+        "MATCH p = (:Agent)-[:AllowedToCall]->(t:Tool)-[:GuardedBy]->"
+        "(:ApprovalGate) WHERE t.read_only = false RETURN p",
     ),
     SavedQuery(
-        "Cross-checks that are not independent",
-        "Two agents meant to check each other while sharing one model, so "
-        "correlated failures pass unnoticed.",
-        "MATCH (a:Agent)-[:RunsOn]->()-[:BackedBy]->(m:Model)<-[:BackedBy]-()"
-        "<-[:RunsOn]-(b:Agent) WHERE a.name < b.name RETURN a, b, m",
+        "Write-capable tools with NO approval gate",
+        "The dangerous shape, and the companion to the query above: a "
+        "path query can only show tools that HAVE a gate, so absence "
+        "there would read as safety. Empty is the correct result here.",
+        "MATCH (t:Tool) WHERE t.read_only = false "
+        "AND NOT (t)-[:GuardedBy]->() RETURN t",
+    ),
+    SavedQuery(
+        "Agents sharing one model",
+        "Matters where two of them are meant to check each other — a "
+        "reviewer running the writer's model reproduces its blind spots, "
+        "so the check reports success it did not earn.",
+        # Two MATCH clauses on purpose: a single pattern cannot traverse
+        # the same BackedBy relationship twice, so agents sharing one
+        # *profile* — the common case — never matched.
+        "MATCH p1 = (a:Agent)-[:RunsOn]->(:ModelProfile)-[:BackedBy]->"
+        "(m:Model) "
+        "MATCH p2 = (b:Agent)-[:RunsOn]->(:ModelProfile)-[:BackedBy]->(m) "
+        "WHERE a.name < b.name RETURN p1, p2",
     ),
     # --- Hygiene ---
     SavedQuery(
@@ -163,9 +180,21 @@ QUERIES: tuple[SavedQuery, ...] = (
         "Permitted but never used",
         "Grants a real run never exercised — the least-privilege backlog. "
         "Requires an export made with --trace-file.",
-        "MATCH (a:Agent)-[:AllowedToCall]->(t:Tool) "
-        "WHERE NOT (a)-[:Called]->(t) RETURN a, t",
+        "MATCH p = (a:Agent)-[:AllowedToCall]->(t:Tool) "
+        "WHERE NOT (a)-[:Called]->(t) RETURN p",
     ),
+)
+
+
+#: The order the README's demo section walks through. Named here so a
+#: renamed query breaks a test rather than the presentation.
+DEMO_ORDER: tuple[str, ...] = (
+    "Overview — the security-relevant graph",
+    "Which agents can untrusted documents reach?",
+    "Confused deputies: who can steer whose tools",
+    "Shortest path from a document to any tool",
+    "Write-capable tools and what guards them",
+    "Approval gates that stopped asking",
 )
 
 

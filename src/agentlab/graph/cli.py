@@ -229,6 +229,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--prune-queries",
+        action="store_true",
+        help=(
+            "With --register-queries, also delete 'agentlab:' queries no "
+            "longer in the set — the residue a rename leaves behind. Only "
+            "touches this project's prefix."
+        ),
+    )
+    parser.add_argument(
         "--cypher",
         action="store_true",
         help="Print starter Cypher queries for BloodHound's console and exit.",
@@ -278,12 +287,16 @@ def main() -> None:
         )
     if args.register_queries:
         load_dotenv(PROJECT_ROOT / ".env")
-        result = register_queries(args.register_queries)
+        result = register_queries(
+            args.register_queries, prune=args.prune_queries
+        )
         print(
             f"Saved queries at {args.register_queries}: "
             f"{len(result.created)} created, {len(result.updated)} updated "
             f"({len(QUERIES)} total). Find them under Explore → Cypher."
         )
+        for name in result.removed:
+            print(f"  removed stale query: {name}")
 
     side_effects = (
         args.export_icons

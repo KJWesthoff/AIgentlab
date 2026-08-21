@@ -202,6 +202,7 @@ DEMO_ORDER: tuple[str, ...] = (
 class QueryRegistration:
     created: tuple[str, ...]
     updated: tuple[str, ...]
+    removed: tuple[str, ...] = ()
 
 
 def write_queries(path: Path) -> Path:
@@ -229,13 +230,21 @@ def write_queries(path: Path) -> Path:
 
 
 def register_queries(
-    base_url: str, client: BloodHoundClient | None = None
+    base_url: str,
+    client: BloodHoundClient | None = None,
+    prune: bool = False,
 ) -> QueryRegistration:
     """Create or refresh every saved query on a running BloodHound.
 
     Idempotent by name: queries this project owns are updated in place
     rather than duplicated, so re-running never leaves a second copy in
     the operator's sidebar.
+
+    ``prune`` additionally deletes ``agentlab:`` queries that are no
+    longer in the set — the residue a rename leaves behind, since the new
+    name is created while the old one stays. Opt-in, because deleting is
+    not something a registration should do behind your back, and scoped
+    to the prefix so queries the operator wrote are never candidates.
     """
     client = client or BloodHoundClient.from_environment(base_url)
 
@@ -265,4 +274,15 @@ def register_queries(
             )
             updated.append(saved.full_name)
 
-    return QueryRegistration(tuple(created), tuple(updated))
+    removed: list[str] = []
+    if prune:
+        wanted = {saved.full_name for saved in QUERIES}
+        for name, identifier in existing.items():
+            if not str(name).startswith(f"{PREFIX}:") or name in wanted:
+                continue
+            client.request("DELETE", f"{QUERY_ENDPOINT}/{identifier}")
+            removed.append(name)
+
+    return QueryRegistration(
+        tuple(created), tuple(updated), tuple(sorted(removed))
+    )

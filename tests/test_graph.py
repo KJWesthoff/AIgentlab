@@ -1198,3 +1198,32 @@ def test_no_query_reuses_one_relationship_within_a_pattern():
                 assert not (
                     single_hop in clause and reverse_hop in clause
                 ), f"{saved.name!r} traverses {kind} both ways in one pattern"
+
+
+def test_pruning_removes_only_our_stale_queries(monkeypatch):
+    """A rename leaves the old name behind; prune clears exactly that.
+
+    Scoped to the prefix: a query the operator wrote must never be a
+    deletion candidate, however stale it looks.
+    """
+    installed = [
+        {"id": 1, "name": f"{PREFIX}: {QUERIES[0].name}"},   # current
+        {"id": 2, "name": f"{PREFIX}: An old renamed query"},  # stale, ours
+        {"id": 3, "name": "Someone else's query"},             # never ours
+    ]
+    calls = fake_bloodhound(monkeypatch, saved_queries=installed)
+    result = register_queries("http://127.0.0.1:8080", prune=True)
+
+    assert result.removed == (f"{PREFIX}: An old renamed query",)
+    deletes = [c for c in calls if c["method"] == "DELETE"]
+    assert [c["uri"] for c in deletes] == ["/api/v2/saved-queries/2"]
+
+
+def test_pruning_is_opt_in(monkeypatch):
+    """Registration must not delete anything behind your back."""
+    installed = [{"id": 2, "name": f"{PREFIX}: An old renamed query"}]
+    calls = fake_bloodhound(monkeypatch, saved_queries=installed)
+    result = register_queries("http://127.0.0.1:8080")
+
+    assert result.removed == ()
+    assert not [c for c in calls if c["method"] == "DELETE"]

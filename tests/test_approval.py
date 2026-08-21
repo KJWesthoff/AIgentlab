@@ -305,3 +305,122 @@ def test_a_session_grant_is_traced_as_such(tmp_path):
     assert written.exists()
     decision = next(e for e in events if e["event"] == "approval_decision")
     assert decision["scope"] == "session"
+
+
+def test_an_agent_with_tools_can_use_them_in_a_prose_stage(tmp_path):
+    """Regression: the writer's draft stage had no tool loop.
+
+    save_report was in the writer's allowlist and reachable in the
+    permission graph, but workflow.py calls run_text, which generated
+    prose and never offered the tools — so the grant was a promise the
+    runtime did not keep, and a live run silently wrote nothing.
+    """
+    import asyncio
+
+    from scripted_provider import ScriptedProvider, scripted_text
+
+    from agentlab.agents.definitions import AgentSpec
+    from agentlab.agents.runtime import AgentRuntime
+    from agentlab.llm.registry import ModelProfile, ModelRegistry
+    from agentlab.llm.service import LLMService
+    from agentlab.llm.types import ToolCall
+    from agentlab.orchestration.state import BudgetTracker, TaskState
+
+    agent = AgentSpec(
+        name="writer",
+        description="test",
+        model_profile="economical",
+        system_prompt="test",
+        allowed_tools={"save_report"},
+        max_calls=2,
+    )
+    provider = ScriptedProvider(
+        [
+            scripted_text(
+                "",
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="save_report",
+                        arguments={"filename": "d.md", "content": "# Draft"},
+                    )
+                ],
+            ),
+            scripted_text("# Draft"),
+        ]
+    )
+    runtime = AgentRuntime(
+        service=LLMService(
+            model_registry=ModelRegistry(
+                {
+                    "economical": ModelProfile(
+                        provider="scripted",
+                        model="scripted/model",
+                        capabilities={"text", "tool_calling"},
+                    )
+                }
+            ),
+            providers={"scripted": provider},
+        ),
+        tools=build_write_tools(tmp_path),
+        tracker=BudgetTracker(),
+        approver=approver("y\n"),
+    )
+
+    draft = asyncio.run(
+        runtime.run_text(
+            agent=agent,
+            state=TaskState(task_id="t", objective="o"),
+            task_input="write and save it",
+        )
+    )
+
+    assert draft == "# Draft"
+    assert (tmp_path / "d.md").read_text() == "# Draft"
+
+
+def test_every_request_carries_the_agents_output_cap():
+    """Regression: an uncapped writer emitted 65,535 tokens in one call."""
+    import asyncio
+
+    from scripted_provider import ScriptedProvider, scripted_text
+
+    from agentlab.agents.definitions import AgentSpec
+    from agentlab.agents.runtime import AgentRuntime
+    from agentlab.llm.registry import ModelProfile, ModelRegistry
+    from agentlab.llm.service import LLMService
+    from agentlab.orchestration.state import BudgetTracker, TaskState
+
+    agent = AgentSpec(
+        name="writer",
+        description="test",
+        model_profile="economical",
+        system_prompt="test",
+        max_output_tokens=1234,
+    )
+    provider = ScriptedProvider([scripted_text("draft")])
+    runtime = AgentRuntime(
+        service=LLMService(
+            model_registry=ModelRegistry(
+                {
+                    "economical": ModelProfile(
+                        provider="scripted",
+                        model="scripted/model",
+                        capabilities={"text"},
+                    )
+                }
+            ),
+            providers={"scripted": provider},
+        ),
+        tools={},
+        tracker=BudgetTracker(),
+    )
+    asyncio.run(
+        runtime.run_text(
+            agent=agent,
+            state=TaskState(task_id="t", objective="o"),
+            task_input="go",
+        )
+    )
+
+    assert provider.requests[0].max_output_tokens == 1234

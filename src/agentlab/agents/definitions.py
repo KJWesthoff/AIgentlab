@@ -21,6 +21,10 @@ class AgentSpec(BaseModel):
     allowed_tools: set[str] = Field(default_factory=set)
     required_capabilities: set[str] = Field(default_factory=set)
     max_calls: int = Field(default=4, ge=1)
+    # Caps a single response. Without it one runaway generation can spend a
+    # whole run's token budget, which is exactly what an unbounded writer
+    # did the first time it was given a tool.
+    max_output_tokens: int = Field(default=4_000, ge=1)
 
 
 def load_agents(path: Path | str) -> dict[str, AgentSpec]:

@@ -54,9 +54,24 @@ class AgentRuntime:
         state: TaskState,
         task_input: str,
     ) -> str:
-        """Run an agent whose output is prose (e.g. the writer's draft)."""
+        """Run an agent whose output is prose (e.g. the writer's draft).
+
+        An agent holding tools gets the bounded tool loop first — without
+        it a tool could be granted in config and remain unreachable at
+        run time, which makes the allowlist a promise the runtime does
+        not keep.
+        """
+        messages = self._initial_messages(agent, task_input)
+
+        if agent.allowed_tools:
+            messages = await self._tool_loop(agent, state, messages)
+            last = messages[-1]
+            if last.role is Role.ASSISTANT and last.content.strip():
+                return last.content
+
         request = GenerationRequest(
-            messages=self._initial_messages(agent, task_input)
+            messages=messages,
+            max_output_tokens=agent.max_output_tokens,
         )
 
         self._tracker.before_model_call()
@@ -143,7 +158,10 @@ class AgentRuntime:
         )
         artifact = await self._service.generate_structured(
             profile_name=agent.model_profile,
-            request=GenerationRequest(messages=final_messages),
+            request=GenerationRequest(
+                messages=final_messages,
+                max_output_tokens=agent.max_output_tokens,
+            ),
             response_type=response_type,
             required_capabilities=agent.required_capabilities,
         )
@@ -185,7 +203,11 @@ class AgentRuntime:
             )
             response = await self._service.generate(
                 profile_name=agent.model_profile,
-                request=GenerationRequest(messages=messages, tools=specifications),
+                request=GenerationRequest(
+                messages=messages,
+                tools=specifications,
+                max_output_tokens=agent.max_output_tokens,
+            ),
                 required_capabilities=agent.required_capabilities,
             )
             self._tracker.record_model_call(response)

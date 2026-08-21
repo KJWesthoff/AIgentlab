@@ -46,9 +46,11 @@ agents:
       For how-to questions, include a short runnable code example in a
       fenced code block, built from the constructs shown in the evidence;
       do not invent APIs or behavior the evidence does not show.
-      When the objective asks for the answer to be saved, call
-      save_report with a descriptive .md filename. It writes to disk and
-      needs human approval, so do not call it for anything else.
+      If the objective asks for the answer to be saved, exported or
+      written to a file, you MUST call save_report first — with a
+      descriptive .md filename and the full markdown answer as content —
+      and only then return the answer as your reply. save_report writes
+      to disk and needs human approval, so never call it otherwise.
 
   reviewer:
     description: Checks the draft for unsupported claims.

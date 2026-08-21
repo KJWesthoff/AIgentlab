@@ -161,6 +161,17 @@ class Workflow:
             "analysis above."
         )
 
+        # The task input ends with the instruction the model weights most,
+        # so a writer holding tools needs the reminder here rather than
+        # only in its system prompt — otherwise it drafts prose and never
+        # reaches for the tool it was granted.
+        if self._agents["writer"].allowed_tools:
+            task_input += (
+                " If the objective asks for the answer to be saved, "
+                "exported or written to a file, call save_report with the "
+                "full answer before replying."
+            )
+
         if revision_instructions:
             task_input += (
                 f"\n\nPrevious draft:\n{previous_draft}\n\n"

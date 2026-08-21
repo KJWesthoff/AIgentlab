@@ -84,6 +84,13 @@ class Workflow:
         )
         state.artifacts["research"] = research.model_dump()
 
+        # Nothing downstream can succeed without evidence, and letting the
+        # pipeline run anyway spends three more model calls to produce a
+        # refusal that was knowable here — one that reads like the system
+        # is broken rather than like the corpus simply lacks the material.
+        if not research.evidence:
+            return self._no_evidence(state, objective, research)
+
         self._tracer.emit("stage_started", stage="analyze", agent="analyst")
         analysis = await self._runtime.run_structured(
             agent=self._agents["analyst"],
@@ -138,6 +145,52 @@ class Workflow:
             research=research,
             analysis=analysis,
             review=review,
+            model_calls=self._tracker.model_calls,
+            tool_calls=self._tracker.tool_calls,
+            accumulated_cost_usd=self._tracker.accumulated_cost_usd,
+            history=state.history,
+        )
+
+    def _no_evidence(
+        self, state: TaskState, objective: str, research: ResearchResult
+    ) -> WorkflowResult:
+        """Stop early and say why, rather than answer without grounding."""
+        unanswered = research.unanswered_questions
+        answer = (
+            "No answer: the corpus contains no evidence relevant to this "
+            "objective, and answering without evidence would mean inventing "
+            "it.\n\nPoint --corpus-dir at a corpus that covers the topic, "
+            "or add source documents to the current one."
+        )
+        if unanswered:
+            answer += "\n\nThe researcher could not resolve:\n" + "\n".join(
+                f"  - {question}" for question in unanswered
+            )
+
+        state.status = "completed"
+        state.final_answer = answer
+        state.log("no_evidence", agent="researcher")
+        self._tracer.emit(
+            "run_finished",
+            approved=False,
+            revisions=0,
+            final_answer=answer,
+            no_evidence=True,
+            budget=budget_snapshot(self._tracker),
+        )
+
+        return WorkflowResult(
+            task_id=state.task_id,
+            objective=objective,
+            final_answer=answer,
+            approved=False,
+            revisions=0,
+            research=research,
+            analysis=AnalysisResult(conclusions=[], confidence=0.0),
+            review=ReviewResult(
+                approved=False,
+                required_changes=["Retrieval returned no evidence."],
+            ),
             model_calls=self._tracker.model_calls,
             tool_calls=self._tracker.tool_calls,
             accumulated_cost_usd=self._tracker.accumulated_cost_usd,

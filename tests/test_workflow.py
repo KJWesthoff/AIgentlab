@@ -199,3 +199,42 @@ def test_tool_rejects_invalid_arguments():
     tools = build_default_tools(PROJECT_ROOT / "data" / "corpus")
     with pytest.raises(Exception):
         tools["search_documents"].execute({"query": "x", "limit": 999})
+
+
+EMPTY_RESEARCH = json.dumps({"evidence": [], "unanswered_questions": ["What is print()?"]})
+
+
+async def test_workflow_stops_when_retrieval_finds_nothing():
+    """A question the corpus cannot support must not reach the writer.
+
+    Running the rest of the pipeline spends three more model calls to
+    produce a refusal that was knowable after research, and the refusal
+    reads like a broken system rather than a corpus that lacks the topic.
+    """
+    provider = ScriptedProvider([scripted_text(EMPTY_RESEARCH)])
+    result = await build_workflow(provider).execute("What does print() do?")
+
+    assert result.approved is False
+    assert "No answer" in result.final_answer
+    assert "--corpus-dir" in result.final_answer
+    # The unanswered question is surfaced rather than swallowed.
+    assert "What is print()?" in result.final_answer
+    # Only the researcher ran: no analyst, writer or reviewer calls.
+    assert result.model_calls == 1
+    assert result.research.evidence == []
+
+
+async def test_workflow_still_runs_when_evidence_exists():
+    """The early exit must not fire on a normal run."""
+    provider = ScriptedProvider(
+        [
+            scripted_text(RESEARCH),
+            scripted_text(ANALYSIS),
+            scripted_text(DRAFT),
+            scripted_text(APPROVED),
+        ]
+    )
+    result = await build_workflow(provider).execute("objective")
+
+    assert result.approved is True
+    assert result.model_calls > 1

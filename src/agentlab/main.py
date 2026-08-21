@@ -105,6 +105,10 @@ async def run(
     print()
     print(result.final_answer)
 
+    if not result.research.evidence:
+        print()
+        print(f"Searched corpus: {corpus_dir}")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="agentlab multi-agent workflow")

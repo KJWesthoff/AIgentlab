@@ -179,8 +179,9 @@ def main() -> None:
         type=Path,
         default=None,
         help=(
-            "Write the saved-query pack here as a ZIP, for BloodHound's "
-            "Cypher → saved queries import."
+            "Write the saved-query pack here as a ZIP. This is NOT graph "
+            "data — it imports under Explore → Cypher, not File Ingest. "
+            "Prefer --register-queries when you have API credentials."
         ),
     )
     parser.add_argument(
@@ -236,6 +237,10 @@ def main() -> None:
         )
     if args.export_queries:
         print(f"Query pack written to {write_queries(args.export_queries)}")
+        print(
+            "  Import under Explore → Cypher — this is saved queries, not "
+            "graph data, and File Ingest will reject it."
+        )
     if args.register_queries:
         load_dotenv(PROJECT_ROOT / ".env")
         result = register_queries(args.register_queries)
@@ -269,10 +274,7 @@ def main() -> None:
         path = write_opengraph(graph, args.export, report)
         if not args.json:
             print(f"OpenGraph written to {path}")
-            print(
-                "Upload it in BloodHound CE under "
-                "Administration → File Ingest."
-            )
+            print("  Upload under Administration → File Ingest (graph data).")
 
     if args.fail_on != "never":
         threshold = list(Severity).index(Severity(args.fail_on))

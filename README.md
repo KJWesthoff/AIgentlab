@@ -553,9 +553,15 @@ start:
 
 ```bash
 agentlab-graph --register-queries http://127.0.0.1:8080
-# or, to import by hand: Explore → Cypher → import
+# or, without API credentials, import by hand under Explore → Cypher:
 agentlab-graph --export-queries queries.zip
 ```
+
+> **Two files, two uploaders.** The OpenGraph JSON is graph data and goes
+> to **Administration → File Ingest**. The query ZIP is saved queries and
+> goes to **Explore → Cypher**. Feeding the query pack to File Ingest
+> fails — it contains `{name, query, description}` records, not nodes and
+> edges. `--register-queries` skips the question entirely.
 
 Fifteen queries, prefixed `agentlab:` so they are easy to find and
 remove as a set, ordered the way a demo runs — overview, then the taint

@@ -239,7 +239,7 @@ layer:
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call and output-token budgets. The researcher gets `max_output_tokens: 12000` because evidence carries verbatim excerpts and grows with the corpus — truncating it fails JSON validation and surfaces as "no evidence", indistinguishable from a corpus that genuinely lacks the topic. The others keep the 4000 default, which is what stops a writer running away to its model's 65k ceiling. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 115 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 121 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -604,6 +604,20 @@ agentlab-graph --ingest http://127.0.0.1:8080
 agentlab-graph --export graph.json
 # BloodHound CE → Administration → File Ingest → upload graph.json
 ```
+
+Add `--replace` when re-ingesting: ingest *adds*, so uploading again
+after the corpus or config changed leaves both sets of nodes in the
+graph. `--replace` deletes this project's source kind first, scoped by
+id to `AgentLab` — never `deleteCollectedGraphData` — so any AD or Azure
+data in the same instance is untouched.
+
+> The clear is asynchronous, and a clear in flight **cancels** any ingest
+> job started underneath it. Waiting for the datapipe to report `idle` is
+> not enough, because immediately after the request it is still idle —
+> the work has not begun. `--replace` waits for the source kind to
+> actually disappear, then for the pipeline to settle, and refuses to
+> upload if the clear never completes rather than silently losing the
+> graph.
 
 `--ingest` does the three calls BloodHound's file ingest actually
 requires — create a job, upload into it, **end** the job — and then waits

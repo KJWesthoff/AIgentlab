@@ -158,6 +158,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--replace",
+        action="store_true",
+        help=(
+            "With --ingest, first delete the graph's existing AgentLab "
+            "nodes so the upload replaces rather than accumulates. Scoped "
+            "to this project's source kind — AD and Azure data are "
+            "untouched."
+        ),
+    )
+    parser.add_argument(
         "--no-wait",
         action="store_true",
         help="With --ingest, return as soon as the job is queued.",
@@ -303,8 +313,15 @@ def main() -> None:
 
     if args.ingest:
         load_dotenv(PROJECT_ROOT / ".env")
-        result = ingest_graph(args.ingest, path, wait=not args.no_wait)
+        result = ingest_graph(
+            args.ingest,
+            path,
+            wait=not args.no_wait,
+            replace=args.replace,
+        )
         if not args.json:
+            if result.cleared:
+                print("  Cleared the existing AgentLab nodes first.")
             print(
                 f"Ingested into {args.ingest} as job {result.job_id} — "
                 f"{result.status_name}."

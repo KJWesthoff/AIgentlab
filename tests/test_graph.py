@@ -973,3 +973,144 @@ def test_ingest_can_skip_waiting(tmp_path, monkeypatch):
     result = ingest_graph("http://127.0.0.1:8080", payload, wait=False)
     assert result.waited is False
     assert not [c for c in calls if c["method"] == "GET"]
+
+
+def fake_replace(
+    monkeypatch, kinds=({"id": 3, "name": "AgentLab"},), clear_lag=0
+):
+    """A BloodHound that lists source kinds and reports an idle pipeline.
+
+    ``clear_lag`` keeps reporting the kind for that many listings after a
+    clear, reproducing the real behaviour: the delete is asynchronous, and
+    a clear still in flight cancels any ingest job started underneath it.
+    """
+    calls: list[dict] = []
+    state = {"cleared": False, "lag": clear_lag}
+
+    def request(method, url, *, content, headers, timeout):
+        uri = url.split("8080", 1)[1]
+        calls.append({"method": method, "uri": uri, "content": content})
+        if uri == "/api/v2/graphs/source-kinds":
+            remaining = list(kinds)
+            if state["cleared"]:
+                if state["lag"] > 0:
+                    state["lag"] -= 1
+                else:
+                    remaining = [
+                        k for k in kinds if k.get("name") != "AgentLab"
+                    ]
+            return httpx.Response(200, json={"data": {"kinds": remaining}})
+        if uri == "/api/v2/clear-database":
+            state["cleared"] = True
+            return httpx.Response(200, json={})
+        if uri == "/api/v2/datapipe/status":
+            return httpx.Response(200, json={"data": {"status": "idle"}})
+        if uri.endswith("/start"):
+            return httpx.Response(201, json={"data": {"id": 7}})
+        if method == "GET" and uri == "/api/v2/file-upload":
+            return httpx.Response(
+                200, json={"data": [{"id": 7, "status": 2}]}
+            )
+        return httpx.Response(200, json={})
+
+    monkeypatch.setenv(TOKEN_ID_VARIABLE, "an-id")
+    monkeypatch.setenv(TOKEN_KEY_VARIABLE, "a-key")
+    monkeypatch.setattr(httpx, "request", request)
+    monkeypatch.setattr(ingest_module.time, "sleep", lambda _: None)
+    return calls
+
+
+def test_replace_deletes_only_this_projects_source_kind(tmp_path, monkeypatch):
+    """Never deleteCollectedGraphData — other people's data must survive."""
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    calls = fake_replace(monkeypatch)
+
+    result = ingest_graph("http://127.0.0.1:8080", payload, replace=True)
+
+    clear = next(c for c in calls if c["uri"] == "/api/v2/clear-database")
+    body = json.loads(clear["content"])
+    assert body == {"deleteSourceKinds": [3]}
+    assert "deleteCollectedGraphData" not in body
+    assert result.cleared is True
+
+
+def test_replace_waits_for_idle_before_uploading(tmp_path, monkeypatch):
+    """Uploading mid-clear risks the delete eating the new nodes."""
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    calls = fake_replace(monkeypatch)
+
+    ingest_graph("http://127.0.0.1:8080", payload, replace=True)
+
+    order = [c["uri"] for c in calls]
+    assert order.index("/api/v2/datapipe/status") < order.index(
+        "/api/v2/file-upload/start"
+    )
+
+
+def test_replace_is_a_noop_when_nothing_was_ingested_before(
+    tmp_path, monkeypatch
+):
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    calls = fake_replace(monkeypatch, kinds=({"id": 1, "name": "Base"},))
+
+    result = ingest_graph("http://127.0.0.1:8080", payload, replace=True)
+
+    assert result.cleared is False
+    assert not [c for c in calls if c["uri"] == "/api/v2/clear-database"]
+    assert result.succeeded
+
+
+def test_ingest_without_replace_never_clears(tmp_path, monkeypatch):
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    calls = fake_replace(monkeypatch)
+
+    ingest_graph("http://127.0.0.1:8080", payload)
+
+    assert not [c for c in calls if c["uri"] == "/api/v2/clear-database"]
+
+
+def test_replace_waits_until_the_kind_is_actually_gone(tmp_path, monkeypatch):
+    """Regression: a job was cancelled by the clear still running.
+
+    The datapipe reports "idle" immediately after the clear request,
+    because the work has not started — so waiting on that alone returned
+    at once and the upload underneath it was cancelled. The wait now
+    watches the source kind disappear.
+    """
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    calls = fake_replace(monkeypatch, clear_lag=3)
+
+    ingest_graph("http://127.0.0.1:8080", payload, replace=True)
+
+    uris = [c["uri"] for c in calls]
+    clear_at = uris.index("/api/v2/clear-database")
+    start_at = uris.index("/api/v2/file-upload/start")
+    listings = [
+        i
+        for i, u in enumerate(uris)
+        if u == "/api/v2/graphs/source-kinds" and clear_at < i < start_at
+    ]
+    # It kept checking while the kind was still reported present.
+    assert len(listings) >= 3
+
+
+def test_replace_refuses_to_upload_if_the_clear_never_finishes(
+    tmp_path, monkeypatch
+):
+    """Uploading anyway would silently lose the graph, as it did once."""
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    calls = fake_replace(monkeypatch, clear_lag=10_000)
+    monkeypatch.setattr(ingest_module, "POLL_INTERVAL_SECONDS", 0)
+
+    with pytest.raises(SystemExit, match="Timed out waiting"):
+        ingest_graph(
+            "http://127.0.0.1:8080", payload, replace=True, timeout=0.05
+        )
+
+    assert "/api/v2/file-upload/start" not in [c["uri"] for c in calls]

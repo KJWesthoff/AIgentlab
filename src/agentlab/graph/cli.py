@@ -68,6 +68,14 @@ def print_summary(graph: Graph, report: Report, trace: Path | None) -> None:
         "  edges: "
         + ", ".join(f"{k} {v}" for k, v in sorted(edge_counts.items()))
     )
+    for corpus in graph.of_kind(NodeKind.CORPUS):
+        if corpus.properties.get("truncated"):
+            print(
+                f"  corpus {corpus.label!r}: showing "
+                f"{len(graph.outgoing(corpus.id))} of "
+                f"{corpus.properties.get('document_count')} documents "
+                "(--max-documents)"
+            )
     print(f"  runtime overlay: {trace if trace else 'none (static only)'}")
     print()
 
@@ -177,8 +185,9 @@ def main() -> None:
         type=int,
         default=MAX_DOCUMENTS,
         help=(
-            "Cap document nodes per corpus, so a large corpus stays legible "
-            "in the UI."
+            "Cap document nodes per corpus. Documents are interchangeable "
+            "to the analysis, so the default keeps the graph legible; raise "
+            "it to see every source in the UI."
         ),
     )
     parser.add_argument(

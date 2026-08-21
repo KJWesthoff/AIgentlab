@@ -1114,3 +1114,47 @@ def test_replace_refuses_to_upload_if_the_clear_never_finishes(
         )
 
     assert "/api/v2/file-upload/start" not in [c["uri"] for c in calls]
+
+
+def test_the_document_cap_changes_size_but_not_findings():
+    """The cap is a legibility knob, never a coverage one.
+
+    Documents in a corpus are interchangeable to the analysis — each is
+    untrusted and each yields the same path shape — so a lower cap must
+    shrink the graph without hiding a check. If that stops being true the
+    default is silently under-reporting.
+    """
+    corpus = PROJECT_ROOT / "data" / "corpus-coding"
+    if not corpus.is_dir():
+        pytest.skip("coding corpus not present")
+
+    def checks_at(limit: int) -> tuple[set[str], int]:
+        graph = collect_static(
+            config_dir=CONFIG_DIR, corpus_dir=corpus, max_documents=limit
+        )
+        return (
+            {f.check for f in analyze(graph).findings},
+            len(graph.of_kind(NodeKind.DOCUMENT)),
+        )
+
+    small_checks, small_docs = checks_at(5)
+    large_checks, large_docs = checks_at(60)
+
+    assert small_checks == large_checks
+    assert small_docs < large_docs
+
+
+def test_a_truncated_corpus_records_the_real_document_count():
+    """The graph must not imply the corpus is smaller than it is."""
+    corpus = PROJECT_ROOT / "data" / "corpus-coding"
+    if not corpus.is_dir():
+        pytest.skip("coding corpus not present")
+
+    graph = collect_static(
+        config_dir=CONFIG_DIR, corpus_dir=corpus, max_documents=5
+    )
+    node = next(
+        n for n in graph.of_kind(NodeKind.CORPUS) if n.label == "corpus"
+    )
+    assert node.properties["truncated"] is True
+    assert node.properties["document_count"] > 5

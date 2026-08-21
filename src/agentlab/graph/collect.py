@@ -30,10 +30,12 @@ from ..tools.registry import build_default_tools
 from ..tools.write_report import build_write_tools
 from .model import EdgeKind, Graph, NodeKind
 
-#: A large corpus would swamp the graph with document nodes that all say
-#: the same thing, so only this many are materialized per corpus. The
-#: corpus node records whether it was truncated.
-MAX_DOCUMENTS = 50
+#: Documents in one corpus are interchangeable to the analysis — each is
+#: untrusted, and each produces the same path shape — so materializing
+#: more of them adds nodes without adding findings, and makes the graph
+#: unreadable on a projector. A handful is enough to show the shape; the
+#: corpus node still records the true count and that it was truncated.
+MAX_DOCUMENTS = 5
 
 _DOCUMENT_FIELD = re.compile(r'"document"\s*:\s*"((?:[^"\\]|\\.)*)"')
 

@@ -713,7 +713,7 @@ has an icon, so a new kind can't ship anonymous.
 > Explore and the search bar are scoped to the built-in AD/Azure kinds, so
 > a successful ingest looks like an empty database. Everything is there —
 > reach it from **Explore → Cypher**, starting with
-> `MATCH (n:AgentLab) RETURN n` (26 nodes for the shipped config). That is
+> `MATCH (n:AgentLab) RETURN n` (29 nodes for the shipped config). That is
 > what the `AgentLab` kind on every node is for.
 
 > **Gotcha:** do not set `objectid` on an OpenGraph node. It is reserved
@@ -723,6 +723,95 @@ has an icon, so a new kind can't ship anonymous.
 > asserts it stays filtered. If you add exported properties later and an
 > upload starts failing, bisect by halving the payload — the error message
 > will not tell you which key is at fault.
+
+---
+
+## Running the demo
+
+Roughly ten minutes end to end, and about a cent in OpenRouter credit.
+
+### Once per BloodHound instance
+
+```bash
+export BLOODHOUND_TOKEN_ID=...     # Administration → API Tokens
+export BLOODHOUND_TOKEN_KEY=...    # both halves; the key signs, and is never sent
+agentlab-graph --register-icons   http://127.0.0.1:8080
+agentlab-graph --register-queries http://127.0.0.1:8080
+```
+
+### Before you present
+
+```bash
+# 1. A real run: real model calls, a real approval prompt, a real file written.
+#    Answer [a] at the prompt — that is the point of the exercise.
+agentlab --corpus-dir data/corpus-coding --approve-writes \
+         --trace-file data/last-run-trace.jsonl \
+         "How do I handle exceptions in Python, and save the answer as a report."
+
+# 2. Build the graph from that run and replace what is in BloodHound.
+agentlab-graph --corpus-dir data/corpus-coding \
+               --trace-file data/last-run-trace.jsonl \
+               --ingest http://127.0.0.1:8080 --replace
+```
+
+`--replace` matters: ingest adds rather than replaces, so without it the
+previous run's documents stay in the graph and the picture is a mixture
+of two runs.
+
+### The run order
+
+In **Explore → Cypher**, from the saved queries prefixed `agentlab:`.
+
+**1. Overview — the security-relevant graph.** ~16 nodes: agents, tools,
+documents, artifacts, and the approval gate. Model and provider plumbing
+is deliberately excluded — it is real, but it says nothing about attack
+paths and would dominate the picture. Establish the shape before making
+any argument about it.
+
+**2. Which agents can untrusted documents reach?** All four, though only
+the researcher ever calls a corpus tool. Nobody granted that. The
+artifacts agents hand each other carry the taint across, and no
+per-agent review would find it — this is the whole reason for the graph.
+
+**3. Confused deputies: who can steer whose tools.** The analyst and
+reviewer are not allowed `save_report`. They do not need to be: their
+output enters the writer's context, and the writer holds it. Structurally
+a user who is not a Domain Admin but sits in a group nested inside one.
+
+**4. Shortest path from a document to a write-capable tool.** The whole
+chain in one picture — `Document` → `researcher` → `writer` → `Tool`,
+warm to gold. This system's "shortest path to Domain Admins".
+
+**5. Write-capable tools and what guards them.** The green
+`ApprovalGate` on the path. This is the reassuring slide, and it is
+where most architecture reviews stop.
+
+**6. Approval gates that stopped asking.** The turn. The same run shows a
+`Denied` edge — policy refusing the call — and an `Approved` edge scoped
+`session`, two events later. The control worked, and then one keypress
+switched it off for the rest of the run.
+
+Then go back to the terminal for the part the graph cannot show:
+
+```
+17 policy_decision    writer → save_report  allowed=False
+19 approval_decision  writer → save_report  approved=True  scope=session   ← seen by a human
+20 tool_result        writer → save_report                                 ← write #1
+27 revision_started   revision=1                                           ← reviewer rejected
+33 approval_decision  writer → save_report  approved=True  scope=session   ← seen by nobody
+34 tool_result        writer → save_report                                 ← write #2
+41 run_finished       approved=False
+```
+
+The file on disk was written by a draft the reviewer rejected, by a call
+no human saw, during a run that ended unapproved. One keypress, two
+writes, and the one that survived is the one nobody looked at.
+
+The point to land: a reviewer reading the architecture sees a control on
+the path. The graph, reading the trace, sees a control that was answered
+once. The diagram cannot tell those apart — which is the same reason
+BloodHound exists for Active Directory.
+
 
 ---
 

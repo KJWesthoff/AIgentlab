@@ -7,9 +7,12 @@ and asserts each analyzer check fires — the shipped config is sound, so
 these dangerous shapes have to be constructed to be tested.
 """
 
+import datetime
 import json
+import re
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 from pydantic import BaseModel
@@ -18,6 +21,14 @@ from agentlab.agents.definitions import load_agents
 from agentlab.graph.analysis import Severity, analyze
 from agentlab.graph.collect import PIPELINE, collect_runtime, collect_static
 from agentlab.graph.export import MAX_KINDS, RESERVED_PROPERTIES, to_opengraph
+from agentlab.graph.icons import (
+    ICONS,
+    TOKEN_ID_VARIABLE,
+    TOKEN_KEY_VARIABLE,
+    register_icons,
+    sign_request,
+    write_icons,
+)
 from agentlab.graph.model import TAINT_EDGES, EdgeKind, Graph, NodeKind
 from agentlab.tools.definitions import Tool, ToolDefinition
 
@@ -494,6 +505,220 @@ def test_export_marks_flagged_nodes_so_the_ui_can_select_them(real_graph):
         for node in payload["graph"]["nodes"]
         if "Tainted" in node["kinds"]
     )
+
+
+def test_every_node_kind_has_an_icon():
+    """A kind with no icon renders as an anonymous default glyph."""
+    assert set(ICONS) == set(NodeKind)
+
+
+def test_icon_payload_matches_the_custom_nodes_api(tmp_path):
+    payload = json.loads(write_icons(tmp_path / "icons.json").read_text())
+    assert set(payload) == {"custom_types"}
+
+    for kind, entry in payload["custom_types"].items():
+        assert kind in {k.value for k in NodeKind}
+        icon = entry["icon"]
+        assert icon["type"] == "font-awesome"
+        # BloodHound wants the bare Font Awesome name, no fa-/fas- prefix.
+        assert not icon["name"].startswith(("fa-", "fas-"))
+        assert re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})", icon["color"])
+
+
+def test_icons_carry_the_trust_story(real_graph):
+    """Untrusted content, privilege and controls must not share a colour.
+
+    The palette is load-bearing: a rendered path should read warm →
+    gold, with green marking a control in the way.
+    """
+    untrusted = ICONS[NodeKind.DOCUMENT].color
+    privilege = ICONS[NodeKind.TOOL].color
+    control = ICONS[NodeKind.APPROVAL_GATE].color
+    assert len({untrusted, privilege, control}) == 3
+
+
+def test_registering_icons_without_a_token_fails_loudly(monkeypatch):
+    monkeypatch.delenv(TOKEN_ID_VARIABLE, raising=False)
+    monkeypatch.delenv(TOKEN_KEY_VARIABLE, raising=False)
+    with pytest.raises(SystemExit, match=TOKEN_ID_VARIABLE):
+        register_icons("http://127.0.0.1:8080")
+
+
+def test_registering_icons_needs_both_halves_of_the_token(monkeypatch):
+    """The id alone is not enough — BloodHound signs, it does not bear."""
+    monkeypatch.setenv(TOKEN_ID_VARIABLE, "an-id")
+    monkeypatch.delenv(TOKEN_KEY_VARIABLE, raising=False)
+    with pytest.raises(SystemExit, match=TOKEN_KEY_VARIABLE):
+        register_icons("http://127.0.0.1:8080")
+
+
+def fake_bloodhound(monkeypatch, existing=(), failures=None):
+    """Stand in for a BloodHound instance, recording what it was sent.
+
+    Only the HTTP boundary is replaced — the payload, the signature chain
+    and the create-vs-update decision are all the real code under test.
+    ``existing`` names kinds the instance already knows, which is the
+    state ingesting a graph leaves behind.
+    """
+    calls: list[dict] = []
+    failures = failures or {}
+
+    def request(method, url, *, content, headers, timeout):
+        uri = url.split("8080", 1)[1]
+        calls.append(
+            {
+                "method": method,
+                "uri": uri,
+                "content": content,
+                "signature": headers["Signature"],
+                "authorization": headers["Authorization"],
+            }
+        )
+        if (method, uri) in failures:
+            return httpx.Response(failures[(method, uri)], text="denied")
+        if method == "GET":
+            return httpx.Response(
+                200,
+                json={"data": [{"kindName": k} for k in existing]},
+            )
+        return httpx.Response(200, json={})
+
+    monkeypatch.setenv(TOKEN_ID_VARIABLE, "an-id")
+    monkeypatch.setenv(TOKEN_KEY_VARIABLE, "a-key")
+    monkeypatch.setattr(httpx, "request", request)
+    return calls
+
+
+def test_registering_icons_creates_every_kind_on_a_clean_instance(monkeypatch):
+    calls = fake_bloodhound(monkeypatch)
+    result = register_icons("http://127.0.0.1:8080/")
+
+    assert set(result.created) == {k.value for k in NodeKind}
+    assert result.updated == ()
+    # One listing, then one batch create — no per-kind traffic needed.
+    assert [c["method"] for c in calls] == ["GET", "POST"]
+    assert calls[0]["authorization"] == "bhesignature an-id"
+    assert json.loads(calls[1]["content"])["custom_types"].keys() == {
+        k.value for k in NodeKind
+    }
+
+
+def test_registering_icons_updates_kinds_ingest_already_created(monkeypatch):
+    """The 409 case: kinds exist without icons, so each needs a PUT.
+
+    The collection endpoint only creates, and there is no batch update,
+    so refreshing an existing instance is one PUT per kind.
+    """
+    calls = fake_bloodhound(monkeypatch, existing=[k.value for k in NodeKind])
+    result = register_icons("http://127.0.0.1:8080")
+
+    assert result.created == ()
+    assert set(result.updated) == {k.value for k in NodeKind}
+
+    assert [c["method"] for c in calls] == ["GET"] + ["PUT"] * len(NodeKind)
+    # Per-kind URI, not the collection — a batch PUT is a 405.
+    assert calls[1]["uri"].startswith("/api/v2/custom-nodes/")
+    assert json.loads(calls[1]["content"])["config"]["icon"]["type"] == (
+        "font-awesome"
+    )
+
+
+def test_registering_icons_handles_a_partly_registered_instance(monkeypatch):
+    calls = fake_bloodhound(monkeypatch, existing=["Agent", "Tool"])
+    result = register_icons("http://127.0.0.1:8080")
+
+    assert set(result.updated) == {"Agent", "Tool"}
+    assert "Document" in result.created
+    assert [c["method"] for c in calls].count("POST") == 1
+    assert [c["method"] for c in calls].count("PUT") == 2
+
+
+def test_each_request_is_signed_over_its_own_uri(monkeypatch):
+    """URI is part of the chain, so per-kind PUTs cannot share a signature."""
+    calls = fake_bloodhound(monkeypatch, existing=[k.value for k in NodeKind])
+    register_icons("http://127.0.0.1:8080")
+
+    puts = [c for c in calls if c["method"] == "PUT"]
+    assert len({c["signature"] for c in puts}) == len(puts)
+
+
+def test_registering_icons_surfaces_a_failure_body(monkeypatch):
+    fake_bloodhound(
+        monkeypatch, failures={("GET", "/api/v2/custom-nodes"): 403}
+    )
+    with pytest.raises(SystemExit, match="403"):
+        register_icons("http://127.0.0.1:8080")
+
+
+#: Golden value transcribed independently from SpecterOps' documented
+#: apiclient.py, so this asserts the chain matches BloodHound rather than
+#: merely matching itself.
+SIGNING_FIXTURE = {
+    "key": "secret-key",
+    "method": "POST",
+    "uri": "/api/v2/custom-nodes",
+    "body": b'{"a": 1}',
+    "when": datetime.datetime(
+        2026, 8, 21, 14, 37, 5,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=2)),
+    ),
+    "date": "2026-08-21T14:37:05+02:00",
+    "signature": "8N93PA/RQykcfWyZyOq1KehL890DfxgAqKFOoA8tY/8=",
+}
+
+
+def test_signature_matches_bloodhounds_documented_chain():
+    date, signature = sign_request(
+        SIGNING_FIXTURE["method"],
+        SIGNING_FIXTURE["uri"],
+        SIGNING_FIXTURE["body"],
+        SIGNING_FIXTURE["key"],
+        when=SIGNING_FIXTURE["when"],
+    )
+    assert date == SIGNING_FIXTURE["date"]
+    assert signature == SIGNING_FIXTURE["signature"]
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("method", "GET"),
+        ("uri", "/api/v2/other"),
+        ("body", b'{"a": 2}'),
+        (
+            "when",
+            datetime.datetime(
+                2026, 8, 21, 15, 37, 5,
+                tzinfo=datetime.timezone(datetime.timedelta(hours=2)),
+            ),
+        ),
+    ],
+)
+def test_signature_covers_method_uri_body_and_hour(field, value):
+    """Chaining means tampering with any part invalidates the signature."""
+    arguments = dict(SIGNING_FIXTURE)
+    arguments[field] = value
+    _, signature = sign_request(
+        arguments["method"],
+        arguments["uri"],
+        arguments["body"],
+        arguments["key"],
+        when=arguments["when"],
+    )
+    assert signature != SIGNING_FIXTURE["signature"]
+
+
+def test_signature_is_stable_within_the_same_hour():
+    """Only the hour is signed, so minutes must not change the result."""
+    later = SIGNING_FIXTURE["when"].replace(minute=59, second=59)
+    _, signature = sign_request(
+        SIGNING_FIXTURE["method"],
+        SIGNING_FIXTURE["uri"],
+        SIGNING_FIXTURE["body"],
+        SIGNING_FIXTURE["key"],
+        when=later,
+    )
+    assert signature == SIGNING_FIXTURE["signature"]
 
 
 def test_export_without_a_report_omits_finding_properties(real_graph):

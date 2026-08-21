@@ -16,9 +16,18 @@ import argparse
 import json
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .analysis import Report, Severity, analyze
 from .collect import MAX_DOCUMENTS, collect_runtime, collect_static
 from .export import write_opengraph
+from .icons import (
+    ICONS,
+    TOKEN_ID_VARIABLE,
+    TOKEN_KEY_VARIABLE,
+    register_icons,
+    write_icons,
+)
 from .model import Graph, NodeKind
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -195,6 +204,25 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--export-icons",
+        type=Path,
+        default=None,
+        help=(
+            "Write the custom node-kind icon pack here, for POSTing to "
+            "BloodHound's /api/v2/custom-nodes endpoint."
+        ),
+    )
+    parser.add_argument(
+        "--register-icons",
+        metavar="URL",
+        default=None,
+        help=(
+            "Register the icon pack directly with a running BloodHound CE "
+            f"(e.g. http://127.0.0.1:8080). Needs {TOKEN_ID_VARIABLE} and "
+            f"{TOKEN_KEY_VARIABLE} in the environment or .env."
+        ),
+    )
+    parser.add_argument(
         "--cypher",
         action="store_true",
         help="Print starter Cypher queries for BloodHound's console and exit.",
@@ -220,6 +248,22 @@ def main() -> None:
             print(f"// {title}")
             print(query)
             print()
+        return
+
+    # Icon work is independent of the graph, so it runs before collection
+    # and can be the only thing a given invocation does.
+    if args.export_icons:
+        print(f"Icon pack written to {write_icons(args.export_icons)}")
+    if args.register_icons:
+        load_dotenv(PROJECT_ROOT / ".env")
+        result = register_icons(args.register_icons)
+        print(
+            f"Icons at {args.register_icons}: "
+            f"{len(result.created)} created, {len(result.updated)} updated "
+            f"({len(ICONS)} node kinds). Reload the BloodHound tab — the UI "
+            "caches icon definitions."
+        )
+    if (args.export_icons or args.register_icons) and not args.export:
         return
 
     if not args.config_dir.is_dir():

@@ -160,6 +160,7 @@ layer:
 │  graph/collect           static (config) + runtime (trace)      │
 │  graph/analysis          pre-built attack-path queries          │
 │  graph/export            BloodHound OpenGraph JSON              │
+│  graph/icons             custom node-kind icons for the UI      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -217,7 +218,8 @@ layer:
 | `collect.py` | Two collectors, mirroring BloodHound's SharpHound/session split. `collect_static()` reads `agents.yaml`, `models.yaml`, the tool registry and the corpus — what configuration *permits*, buildable with nothing running. `collect_runtime()` replays a JSONL trace and adds what *happened*: `Called` edges, `Denied` edges, and confirmation of which documents genuinely entered a context. The two stay distinct so the gap between them is visible. `PIPELINE` declares the artifact hand-offs mirroring `Workflow.execute` (plain Python, not introspectable); a test fails if the two drift. |
 | `analysis.py` | The pre-built queries. `untrusted-to-write-tool` (this system's "shortest path to Domain Admin"), `confused-deputy` (an agent steering a tool it was never granted, via one that was), `indirect-injection-reach` (agents tainted through artifacts without reading a document), `crosscheck-not-independent` (writer and reviewer on one model), plus hygiene checks — dangling grants, capability gaps, orphaned tools — and the runtime pair `runtime-drift` / `observed-denial`. Read-only: it reports, `policy.py` enforces. |
 | `export.py` | `to_opengraph()` / `write_opengraph()` — BloodHound CE **OpenGraph** JSON: custom node and edge kinds rather than pretending agents are AD users. Findings fold onto the nodes they implicate (`finding_count`, `max_severity`), and flagged nodes get a third kind `Tainted` so `MATCH (n:Tainted)` works in the Cypher console. Respects the format's limits: ≤3 kinds per node, flat properties only. |
-| `cli.py` | `agentlab-graph` — builds, analyzes, exports. `--trace-file` overlays a run, `--export` writes the OpenGraph file, `--cypher` prints starter queries, `--json` emits machine-readable findings, `--fail-on` turns it into a CI gate. |
+| `icons.py` | The custom node-kind icon pack for BloodHound's `/api/v2/custom-nodes` endpoint. Font Awesome free-solid names plus a palette that encodes trust: warm for attacker-influenceable content, gold for privilege, green for controls, cool for infrastructure. `register_icons()` POSTs it to a running instance, signing requests with `sign_request()` (BloodHound's chained-HMAC `bhesignature` scheme — bearer tokens are rejected) and reading `BLOODHOUND_TOKEN_ID` / `BLOODHOUND_TOKEN_KEY` from the environment, so no credential lands in the repo. |
+| `cli.py` | `agentlab-graph` — builds, analyzes, exports. `--trace-file` overlays a run, `--export` writes the OpenGraph file, `--export-icons` / `--register-icons` handle the icon pack, `--cypher` prints starter queries, `--json` emits machine-readable findings, `--fail-on` turns it into a CI gate. |
 
 ### Entry point and configuration
 
@@ -228,7 +230,7 @@ layer:
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call budget. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 54 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, and OpenGraph schema conformance). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 72 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, and icon registration against clean, fully-registered and partly-registered instances). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -540,8 +542,53 @@ Findings ride along on the nodes they implicate (`finding_count`,
 `max_severity`, `findings`), and any flagged node carries a third kind
 `Tainted`, so a demo can open on `MATCH (n:Tainted) RETURN n` rather than
 hunting through the graph. `agentlab-graph --cypher` prints the rest of
-the starter queries. Custom node kinds render with a default icon until
-you assign one in BloodHound's custom-icon settings.
+the starter queries.
+
+### Icons
+
+Unregistered custom kinds all render with the same anonymous glyph, which
+flattens the visual story exactly where it should be strongest. Register
+the icon pack once per BloodHound instance:
+
+```bash
+# Administration → API Tokens gives you an id *and* a key; you need both.
+export BLOODHOUND_TOKEN_ID=...
+export BLOODHOUND_TOKEN_KEY=...
+agentlab-graph --register-icons http://127.0.0.1:8080
+
+# or write the payload and POST it yourself:
+agentlab-graph --export-icons icons.json
+```
+
+BloodHound's API does not accept bearer tokens. Requests carry
+`Authorization: bhesignature <id>` plus a `Signature` header — three
+chained HMAC-SHA256 digests over the method and path, the timestamp
+truncated to the hour, and the exact body. The key signs and is never
+transmitted. The hour truncation bounds replay, which also means a clock
+skewed more than an hour fails as a *token* error rather than anything
+that mentions time.
+
+Registration is idempotent, which takes some doing. Ingesting a graph
+already registers its kinds — without icons — so a plain `POST` comes
+back `409 duplicate kind name`, and because the batch is atomic, one
+existing kind rejects all ten. There is no batch update: `PUT` lives at
+`/api/v2/custom-nodes/{kind_name}`, one kind at a time (a `PUT` to the
+collection is a `405`). So `register_icons()` lists what exists, creates
+the rest in a single `POST`, and `PUT`s the remainder individually —
+re-signing each, since both method and URI are part of the chain.
+
+The palette is load-bearing rather than decorative:
+
+| | Kinds | Meaning |
+|---|---|---|
+| 🔴 warm | `Document`, `Corpus`, `Artifact` | content that is, or may become, attacker-influenced |
+| 🟡 gold | `Tool` | privilege — what a path is trying to reach |
+| 🟢 green | `ApprovalGate` | a control standing in the way |
+| 🔵 cool | `Agent`, `ModelProfile`, `Model`, `Provider`, `Capability` | infrastructure |
+
+So a rendered attack path reads warm → gold, and any green on it is a
+control the attacker has to get through. A test asserts every `NodeKind`
+has an icon, so a new kind can't ship anonymous.
 
 > **Gotcha:** custom kinds are invisible in BloodHound's default views.
 > Explore and the search bar are scoped to the built-in AD/Azure kinds, so

@@ -8,3 +8,4 @@ data/runs/
 data/*-opengraph.json
 data/agentlab-queries.zip
 data/reports/
+data/last-run-trace.jsonl

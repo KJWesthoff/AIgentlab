@@ -21,7 +21,11 @@ class ExecutionBudget(BaseModel):
     maximum_model_calls: int = 12
     maximum_tool_calls: int = 6
     maximum_input_tokens: int = 200_000
-    maximum_output_tokens: int = 20_000
+    # Headroom for the researcher's 12k evidence cap plus the four later
+    # stages and a revision; raising a per-agent cap without this only
+    # moves the failure from truncation to BudgetExceeded. Cost stays the
+    # real guard — output tokens are the cheap half of a run.
+    maximum_output_tokens: int = 60_000
     maximum_cost_usd: float = 1.00
 
 

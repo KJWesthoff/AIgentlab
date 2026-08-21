@@ -8,6 +8,11 @@ agents:
     required_capabilities: [text, tool_calling, structured_output]
     allowed_tools: [search_documents]
     max_calls: 3
+    # Evidence carries verbatim excerpts, so this response is the longest
+    # in the pipeline and grows with the corpus. Truncation here fails
+    # JSON validation and surfaces as "no evidence" — indistinguishable
+    # from a corpus that genuinely lacks the topic, so leave headroom.
+    max_output_tokens: 12000
     system_prompt: |
       You are a careful researcher. Find evidence relevant to the objective
       using the search_documents tool, then return a JSON object with:

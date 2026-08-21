@@ -64,7 +64,7 @@ python -m agentlab.main "Explain the difference between RAG and a plain database
 # Map entities and permissions as a graph and hunt for composed-permission
 # attack paths, BloodHound-style (no API key, no infrastructure):
 agentlab-graph
-agentlab-graph --export graph.json    # then upload to BloodHound CE
+agentlab-graph --ingest http://127.0.0.1:8080   # straight into BloodHound CE
 
 # Tests (offline, free — orchestration logic only, no model output involved):
 pytest
@@ -227,7 +227,8 @@ layer:
 | `bloodhound.py` | `BloodHoundClient` — the signed API client. BloodHound does not accept bearer tokens: a token is an *id* plus a *key*, and `sign_request()` implements the `bhesignature` chain (three HMAC-SHA256 digests over method+URI, the timestamp truncated to the hour, then the exact body). The key signs and is never transmitted. Credentials come from `BLOODHOUND_TOKEN_ID` / `BLOODHOUND_TOKEN_KEY`. |
 | `queries.py` | The saved Cypher query set — fifteen queries mirroring the checks in `analysis.py`, prefixed `agentlab:` and ordered as a demo runs. `write_queries()` emits a ZIP in BloodHound's own import format (one JSON per query); `register_queries()` installs them over the API, updating by name rather than duplicating. |
 | `icons.py` | The custom node-kind icon pack for BloodHound's `/api/v2/custom-nodes` endpoint. Font Awesome free-solid names plus a palette that encodes trust: warm for attacker-influenceable content, gold for privilege, green for controls, cool for infrastructure. `register_icons()` POSTs it to a running instance, signing requests with `sign_request()` (BloodHound's chained-HMAC `bhesignature` scheme — bearer tokens are rejected) and reading `BLOODHOUND_TOKEN_ID` / `BLOODHOUND_TOKEN_KEY` from the environment, so no credential lands in the repo. |
-| `cli.py` | `agentlab-graph` — builds, analyzes, exports. `--trace-file` overlays a run, `--export` writes the OpenGraph file, `--export-icons` / `--register-icons` handle the icon pack, `--cypher` prints starter queries, `--json` emits machine-readable findings, `--fail-on` turns it into a CI gate. |
+| `ingest.py` | `ingest_graph()` — uploads a payload over the API. File ingest is three calls (start job → upload → **end** job); ending it is what triggers processing, so a client that skips it leaves data in an open job and an empty graph. Then polls until the job leaves its running states, reporting the real outcome rather than assuming success. |
+| `cli.py` | `agentlab-graph` — builds, analyzes, exports. `--trace-file` overlays a run, `--export` writes the OpenGraph file, `--ingest` builds and uploads it in one command, `--export-icons` / `--register-icons` handle the icon pack, `--cypher` prints starter queries, `--json` emits machine-readable findings, `--fail-on` turns it into a CI gate. |
 
 ### Entry point and configuration
 
@@ -238,7 +239,7 @@ layer:
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call budget. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 106 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 113 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -463,9 +464,17 @@ does the same for this lab.
 ```bash
 agentlab-graph                              # findings for the current config
 agentlab-graph --trace-file run.jsonl       # overlay what a real run did
-agentlab-graph --export graph.json          # upload to BloodHound CE
+agentlab-graph --ingest http://127.0.0.1:8080   # build and upload, one command
+agentlab-graph --export graph.json          # or write the payload to upload by hand
 agentlab-graph --cypher                     # starter queries for its console
 agentlab-graph --fail-on high               # CI gate; exits non-zero
+```
+
+The whole demo loop, after a live run:
+
+```bash
+agentlab --approve-writes --trace-file run.jsonl "... and save the answer"
+agentlab-graph --trace-file run.jsonl --ingest http://127.0.0.1:8080
 ```
 
 No infrastructure is required for the analysis — it is plain Python over
@@ -590,9 +599,18 @@ instead of being disguised as `User` and `AdminTo`. You get the real UI:
 pathfinding, the Cypher console, saved queries.
 
 ```bash
+agentlab-graph --ingest http://127.0.0.1:8080
+# or, to upload by hand:
 agentlab-graph --export graph.json
 # BloodHound CE → Administration → File Ingest → upload graph.json
 ```
+
+`--ingest` does the three calls BloodHound's file ingest actually
+requires — create a job, upload into it, **end** the job — and then waits
+for the job to leave its running states. Skipping that last call is the
+classic failure: the upload reports success and the graph stays empty,
+because nothing is processed until the job ends. `--no-wait` returns as
+soon as the work is queued.
 
 Findings ride along on the nodes they implicate (`finding_count`,
 `max_severity`, `findings`), and any flagged node carries a third kind

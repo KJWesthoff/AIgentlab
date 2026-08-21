@@ -27,7 +27,9 @@ from agentlab.graph.bloodhound import (
 )
 from agentlab.graph.collect import PIPELINE, collect_runtime, collect_static
 from agentlab.graph.export import MAX_KINDS, RESERVED_PROPERTIES, to_opengraph
+from agentlab.graph import ingest as ingest_module
 from agentlab.graph.icons import ICONS, register_icons, write_icons
+from agentlab.graph.ingest import ingest_graph
 from agentlab.graph.model import TAINT_EDGES, EdgeKind, Graph, NodeKind
 from agentlab.graph.queries import (
     PREFIX,
@@ -880,3 +882,94 @@ def test_export_without_a_report_omits_finding_properties(real_graph):
     assert all(
         "Tainted" not in node["kinds"] for node in payload["graph"]["nodes"]
     )
+
+
+# --- File ingest ---------------------------------------------------------
+
+
+def fake_ingest(monkeypatch, statuses=(2,), start_id=7):
+    """A BloodHound that accepts an upload job and reports job status."""
+    calls: list[dict] = []
+    remaining = list(statuses)
+
+    def request(method, url, *, content, headers, timeout):
+        uri = url.split("8080", 1)[1]
+        calls.append({"method": method, "uri": uri, "content": content})
+        if uri.endswith("/start"):
+            return httpx.Response(201, json={"data": {"id": start_id}})
+        if method == "GET" and uri == "/api/v2/file-upload":
+            status = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+            return httpx.Response(
+                200, json={"data": [{"id": start_id, "status": status}]}
+            )
+        return httpx.Response(200, json={})
+
+    monkeypatch.setenv(TOKEN_ID_VARIABLE, "an-id")
+    monkeypatch.setenv(TOKEN_KEY_VARIABLE, "a-key")
+    monkeypatch.setattr(httpx, "request", request)
+    monkeypatch.setattr(ingest_module.time, "sleep", lambda _: None)
+    return calls
+
+
+def test_ingest_performs_the_three_step_flow(tmp_path, monkeypatch):
+    """Uploading without ending the job leaves the data unprocessed."""
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b'{"graph":{"nodes":[],"edges":[]}}')
+    calls = fake_ingest(monkeypatch)
+
+    result = ingest_graph("http://127.0.0.1:8080", payload)
+
+    uris = [c["uri"] for c in calls if c["method"] == "POST"]
+    assert uris == [
+        "/api/v2/file-upload/start",
+        "/api/v2/file-upload/7",
+        "/api/v2/file-upload/7/end",
+    ]
+    assert result.job_id == 7
+    assert result.succeeded
+
+
+def test_ingest_sends_the_file_bytes_verbatim(tmp_path, monkeypatch):
+    """The signature covers these bytes, so they must not be re-encoded."""
+    payload = tmp_path / "graph.json"
+    raw = b'{"graph": {"nodes": [], "edges": []}}'
+    payload.write_bytes(raw)
+    calls = fake_ingest(monkeypatch)
+
+    ingest_graph("http://127.0.0.1:8080", payload)
+
+    upload = next(c for c in calls if c["uri"] == "/api/v2/file-upload/7")
+    assert upload["content"] == raw
+
+
+def test_ingest_waits_for_the_job_to_stop_running(tmp_path, monkeypatch):
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    # ingesting → analyzing → complete
+    fake_ingest(monkeypatch, statuses=(6, 7, 2))
+
+    result = ingest_graph("http://127.0.0.1:8080", payload)
+    assert result.status_name == "complete"
+    assert result.waited
+
+
+def test_ingest_reports_a_failed_job_rather_than_claiming_success(
+    tmp_path, monkeypatch
+):
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    fake_ingest(monkeypatch, statuses=(5,))
+
+    result = ingest_graph("http://127.0.0.1:8080", payload)
+    assert not result.succeeded
+    assert result.status_name == "failed"
+
+
+def test_ingest_can_skip_waiting(tmp_path, monkeypatch):
+    payload = tmp_path / "graph.json"
+    payload.write_bytes(b"{}")
+    calls = fake_ingest(monkeypatch)
+
+    result = ingest_graph("http://127.0.0.1:8080", payload, wait=False)
+    assert result.waited is False
+    assert not [c for c in calls if c["method"] == "GET"]

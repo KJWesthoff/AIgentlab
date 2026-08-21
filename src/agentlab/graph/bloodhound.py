@@ -77,9 +77,18 @@ class BloodHoundClient:
         return cls(base_url.rstrip("/"), token_id, token_key)
 
     def request(
-        self, method: str, uri: str, payload: Any | None = None
+        self,
+        method: str,
+        uri: str,
+        payload: Any | None = None,
+        *,
+        body: bytes | None = None,
     ) -> Any:
         """Send one signed request, returning the decoded body.
+
+        ``body`` sends pre-serialized bytes as-is, for endpoints that take
+        a file rather than a JSON document. Re-encoding those would change
+        the bytes the signature covers.
 
         Raises ``SystemExit`` with the server's own message on failure —
         BloodHound's errors are specific enough to act on, and far more
@@ -89,7 +98,8 @@ class BloodHoundClient:
 
         # Body and URI are both signed, so serialize once and send exactly
         # those bytes; re-encoding could invalidate the signature.
-        body = b"" if payload is None else json.dumps(payload).encode()
+        if body is None:
+            body = b"" if payload is None else json.dumps(payload).encode()
         request_date, signature = sign_request(
             method, uri, body, self.token_key
         )

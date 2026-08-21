@@ -23,6 +23,7 @@ from .collect import MAX_DOCUMENTS, collect_runtime, collect_static
 from .export import write_opengraph
 from .bloodhound import TOKEN_ID_VARIABLE, TOKEN_KEY_VARIABLE
 from .icons import ICONS, register_icons, write_icons
+from .ingest import ingest_graph
 from .queries import QUERIES, register_queries, write_queries
 from .model import Graph, NodeKind
 
@@ -145,6 +146,21 @@ def main() -> None:
             "Write BloodHound OpenGraph JSON here, ready to upload to "
             "BloodHound CE."
         ),
+    )
+    parser.add_argument(
+        "--ingest",
+        metavar="URL",
+        default=None,
+        help=(
+            "Build the graph and upload it straight to a running BloodHound "
+            "CE, waiting for the ingest job to finish. Uses --export as the "
+            "payload path when given. Needs the API token variables."
+        ),
+    )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="With --ingest, return as soon as the job is queued.",
     )
     parser.add_argument(
         "--max-documents",
@@ -270,11 +286,39 @@ def main() -> None:
     else:
         print_summary(graph, report, args.trace_file)
 
-    if args.export:
-        path = write_opengraph(graph, args.export, report)
+    if args.export or args.ingest:
+        # --ingest without --export still needs a file to send; keep it
+        # beside the other generated artifacts rather than in a temp dir,
+        # so a failed upload leaves something to inspect and retry.
+        destination = args.export or (
+            PROJECT_ROOT / "data" / "agentlab-opengraph.json"
+        )
+        path = write_opengraph(graph, destination, report)
         if not args.json:
             print(f"OpenGraph written to {path}")
-            print("  Upload under Administration → File Ingest (graph data).")
+            if not args.ingest:
+                print(
+                    "  Upload under Administration → File Ingest (graph data)."
+                )
+
+    if args.ingest:
+        load_dotenv(PROJECT_ROOT / ".env")
+        result = ingest_graph(args.ingest, path, wait=not args.no_wait)
+        if not args.json:
+            print(
+                f"Ingested into {args.ingest} as job {result.job_id} — "
+                f"{result.status_name}."
+            )
+            if result.waited and not result.succeeded:
+                print(
+                    "  Job did not report success; check Administration → "
+                    "File Ingest for its error detail."
+                )
+            elif result.succeeded:
+                print(
+                    "  Query it under Explore → Cypher: "
+                    "MATCH (n:AgentLab) RETURN n"
+                )
 
     if args.fail_on != "never":
         threshold = list(Severity).index(Severity(args.fail_on))

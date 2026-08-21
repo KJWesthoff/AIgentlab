@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..llm.types import ToolSpecification
 
@@ -21,6 +21,12 @@ class ToolDefinition(BaseModel):
     description: str
     risk: str = "low"
     read_only: bool = True
+
+    # Data sources this tool touches, by logical name. Declared here so the
+    # permission graph can derive where untrusted content enters the system
+    # instead of guessing from the tool's name.
+    reads: list[str] = Field(default_factory=list)
+    writes: list[str] = Field(default_factory=list)
 
 
 class Tool:

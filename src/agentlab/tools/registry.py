@@ -67,6 +67,7 @@ def build_default_tools(corpus_dir: Path = DEFAULT_CORPUS_DIR) -> dict[str, Tool
                 ),
                 risk="low",
                 read_only=True,
+                reads=["corpus"],
             ),
             SearchDocumentsInput,
             make_search_documents(corpus_dir),

@@ -168,6 +168,7 @@ def build_vector_tools(
                 ),
                 risk="low",
                 read_only=True,
+                reads=["corpus"],
             ),
             SearchDocumentsInput,
             search_documents,

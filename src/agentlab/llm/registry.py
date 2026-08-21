@@ -37,6 +37,11 @@ class ModelRegistry:
         }
         return cls(profiles)
 
+    @property
+    def profiles(self) -> dict[str, ModelProfile]:
+        """Read-only view, for tooling that inspects the configuration."""
+        return dict(self._profiles)
+
     def resolve(
         self,
         profile_name: str,

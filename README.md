@@ -61,6 +61,11 @@ agentlab --live "How do I narrow a union type in TypeScript?"
 # (equivalent long form, works from any directory:)
 python -m agentlab.main "Explain the difference between RAG and a plain database lookup."
 
+# Map entities and permissions as a graph and hunt for composed-permission
+# attack paths, BloodHound-style (no API key, no infrastructure):
+agentlab-graph
+agentlab-graph --export graph.json    # then upload to BloodHound CE
+
 # Tests (offline, free — orchestration logic only, no model output involved):
 pytest
 ```
@@ -150,6 +155,11 @@ layer:
 │  observability/trace     opt-in JSONL run trace: context        │
 │                          windows, policy/budget decisions       │
 │  observability/server    localhost live viewer (--live)         │
+├─────────────────────────────────────────────────────────────────┤
+│  graph/model             entities + permission/flow edges       │
+│  graph/collect           static (config) + runtime (trace)      │
+│  graph/analysis          pre-built attack-path queries          │
+│  graph/export            BloodHound OpenGraph JSON              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -199,6 +209,16 @@ layer:
 | `server.py` | `TraceServer` — stdlib-only HTTP server on localhost: `/` serves the viewer page, `/events?after=N` returns events newer than sequence N, which is all the page needs to poll a run live. Read-only over the trace file; falls back to a free port if the requested one is taken. |
 | `viewer.html` | Single self-contained page (no external assets, light/dark aware). Shows the run grouped by pipeline stage: expandable context windows with role-colored messages and UNTRUSTED banners, policy allow/deny lines, schema-validated artifacts, the revision loop, a live budget line, and a security panel listing each agent's allowlist plus the hard vs. soft checks with live counters (denials, untrusted-labeled results, validated artifacts). |
 
+### `src/agentlab/graph/` — the permission graph
+
+| Module | Responsibility |
+|---|---|
+| `model.py` | `Graph`, `Node`, `Edge`, `NodeKind`, `EdgeKind` — an in-memory directed multigraph with breadth-first `shortest_path()` and `reachable_from()`. Edges always mean "start can influence or reach end", in two layers: **permission** edges run principal → resource (`AllowedToCall`, `RunsOn`, `Reads`, `GuardedBy`), **flow** edges run in the direction content moves (`CanInject`, `Produces`, `FlowsTo`, `CanCoerce`). `TAINT_EDGES` is the subset a taint query may traverse. |
+| `collect.py` | Two collectors, mirroring BloodHound's SharpHound/session split. `collect_static()` reads `agents.yaml`, `models.yaml`, the tool registry and the corpus — what configuration *permits*, buildable with nothing running. `collect_runtime()` replays a JSONL trace and adds what *happened*: `Called` edges, `Denied` edges, and confirmation of which documents genuinely entered a context. The two stay distinct so the gap between them is visible. `PIPELINE` declares the artifact hand-offs mirroring `Workflow.execute` (plain Python, not introspectable); a test fails if the two drift. |
+| `analysis.py` | The pre-built queries. `untrusted-to-write-tool` (this system's "shortest path to Domain Admin"), `confused-deputy` (an agent steering a tool it was never granted, via one that was), `indirect-injection-reach` (agents tainted through artifacts without reading a document), `crosscheck-not-independent` (writer and reviewer on one model), plus hygiene checks — dangling grants, capability gaps, orphaned tools — and the runtime pair `runtime-drift` / `observed-denial`. Read-only: it reports, `policy.py` enforces. |
+| `export.py` | `to_opengraph()` / `write_opengraph()` — BloodHound CE **OpenGraph** JSON: custom node and edge kinds rather than pretending agents are AD users. Findings fold onto the nodes they implicate (`finding_count`, `max_severity`), and flagged nodes get a third kind `Tainted` so `MATCH (n:Tainted)` works in the Cypher console. Respects the format's limits: ≤3 kinds per node, flat properties only. |
+| `cli.py` | `agentlab-graph` — builds, analyzes, exports. `--trace-file` overlays a run, `--export` writes the OpenGraph file, `--cypher` prints starter queries, `--json` emits machine-readable findings, `--fail-on` turns it into a CI gate. |
+
 ### Entry point and configuration
 
 | File | Responsibility |
@@ -208,7 +228,7 @@ layer:
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call budget. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 34 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 54 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, and OpenGraph schema conformance). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -419,6 +439,124 @@ polling. The trace file is also useful on its own: `jq` over
 `run.jsonl` answers questions like "what did the reviewer actually see?"
 after the fact. With `--live` the server stays up after the run finishes
 (Ctrl+C to exit), so the completed run can still be inspected.
+
+---
+
+## Permission graph (BloodHound-style attack paths)
+
+Agent permissions have the same failure mode as Active Directory ACLs:
+every individual grant looks reasonable, and the danger lives in their
+*composition*. BloodHound made that visible for AD by turning the
+directory into a graph and asking for shortest paths. `agentlab-graph`
+does the same for this lab.
+
+```bash
+agentlab-graph                              # findings for the current config
+agentlab-graph --trace-file run.jsonl       # overlay what a real run did
+agentlab-graph --export graph.json          # upload to BloodHound CE
+agentlab-graph --cypher                     # starter queries for its console
+agentlab-graph --fail-on high               # CI gate; exits non-zero
+```
+
+No infrastructure is required for the analysis — it is plain Python over
+a few dozen nodes. BloodHound is the *rendering* surface, not the engine,
+so the findings still work in CI and in tests with nothing installed.
+
+### The mapping
+
+| Active Directory | agentlab |
+|---|---|
+| User / Computer (a principal) | **Agent** — an entry in `config/agents.yaml` |
+| Group membership | **`RunsOn` → `BackedBy` → `ServedBy`** (agent → profile → model → provider) |
+| Rights a group confers | **Capability** (`text`, `tool_calling`, `structured_output`) |
+| `AdminTo` / an ACE on an object | **`AllowedToCall`** — an agent's tool allowlist |
+| A share an unprivileged user can write to | **Document** in the corpus — untrusted by assumption |
+| `HasSession` (a credential left on a host) | **Artifact** — `Produces` / `FlowsTo`, the only thing crossing between agent contexts |
+| "Requires MFA" as a mitigating control | **`GuardedBy`** — the human-approval gate `policy.py` puts in front of write-capable tools |
+| Shortest path to Domain Admins | Shortest path from a **Document** to a write-capable **Tool** |
+
+Two collectors mirror BloodHound's own split. The static one reads
+configuration — what is *permitted*. The runtime one replays a trace from
+`--trace-file` or `--live` — what actually *happened*, as `Called` and
+`Denied` edges. Keeping them distinct is the point: a completed call on an
+edge configuration doesn't grant is reported as `runtime-drift` at
+critical severity, because `policy.py` should have made it impossible.
+
+### What it finds in the shipped config
+
+```
+3 findings — 3 medium
+
+ ~ [indirect-injection-reach] 'analyst' is injection-reachable but reads no documents
+     path: prompt-injection.md -[CanInject]-> researcher -[CanCoerce]-> analyst
+```
+
+Only the researcher ever touches the corpus. Its allowlist is one
+read-only tool. Reviewed agent by agent, nothing is wrong — and yet
+untrusted document content reaches all four agents, because artifacts
+carry it downstream. `runtime.py` labels tool results with
+`UNTRUSTED_PREFIX`, but artifacts pass between stages unlabeled, so the
+taint crosses the boundary without a marker. That is exactly the class of
+finding per-object review misses and a graph makes obvious.
+
+The shipped configuration has no high or critical findings, and a test
+asserts it stays that way. To watch a dangerous composition appear, grant
+the writer the search tool:
+
+```yaml
+# config/agents.yaml
+  writer:
+    allowed_tools: [search_documents]   # one line
+```
+
+```
+ ~ [confused-deputy] 'analyst' can influence 'writer', which holds search_documents
+     path: analyst -[Produces]-> AnalysisResult -[FlowsTo]-> writer
+```
+
+The analyst was never granted that tool. It doesn't need to be: its
+output steers an agent that has it. Structurally this is a user who is
+not a Domain Admin but sits in a group nested inside one.
+
+Note that `untrusted-to-write-tool` — the critical one — cannot fire on
+the current config, because no write-capable tool is registered yet. It
+lights up as soon as one is (the MCP gateway on the roadmap, for
+instance), and until then the check is covered by tests rather than by
+the live graph.
+
+### Viewing it in BloodHound CE
+
+The export uses **OpenGraph**, BloodHound CE's generic ingest format, so
+the nodes keep honest names — `Agent`, `Tool`, `Document`, `CanInject` —
+instead of being disguised as `User` and `AdminTo`. You get the real UI:
+pathfinding, the Cypher console, saved queries.
+
+```bash
+agentlab-graph --export graph.json
+# BloodHound CE → Administration → File Ingest → upload graph.json
+```
+
+Findings ride along on the nodes they implicate (`finding_count`,
+`max_severity`, `findings`), and any flagged node carries a third kind
+`Tainted`, so a demo can open on `MATCH (n:Tainted) RETURN n` rather than
+hunting through the graph. `agentlab-graph --cypher` prints the rest of
+the starter queries. Custom node kinds render with a default icon until
+you assign one in BloodHound's custom-icon settings.
+
+> **Gotcha:** custom kinds are invisible in BloodHound's default views.
+> Explore and the search bar are scoped to the built-in AD/Azure kinds, so
+> a successful ingest looks like an empty database. Everything is there —
+> reach it from **Explore → Cypher**, starting with
+> `MATCH (n:AgentLab) RETURN n` (26 nodes for the shipped config). That is
+> what the `AgentLab` kind on every node is for.
+
+> **Gotcha:** do not set `objectid` on an OpenGraph node. It is reserved
+> by BloodHound's base node schema, and its presence makes the *entire*
+> upload fail with a bare "Failed to Upload" that names no property.
+> `export.py` filters `RESERVED_PROPERTIES` for this reason, and a test
+> asserts it stays filtered. If you add exported properties later and an
+> upload starts failing, bisect by halving the payload — the error message
+> will not tell you which key is at fault.
 
 ---
 

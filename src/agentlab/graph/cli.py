@@ -21,13 +21,9 @@ from dotenv import load_dotenv
 from .analysis import Report, Severity, analyze
 from .collect import MAX_DOCUMENTS, collect_runtime, collect_static
 from .export import write_opengraph
-from .icons import (
-    ICONS,
-    TOKEN_ID_VARIABLE,
-    TOKEN_KEY_VARIABLE,
-    register_icons,
-    write_icons,
-)
+from .bloodhound import TOKEN_ID_VARIABLE, TOKEN_KEY_VARIABLE
+from .icons import ICONS, register_icons, write_icons
+from .queries import QUERIES, register_queries, write_queries
 from .model import Graph, NodeKind
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -39,50 +35,6 @@ _MARKERS = {
     Severity.LOW: " -",
     Severity.INFO: " .",
 }
-
-#: Starting points for a demo. These are the OpenGraph equivalents of
-#: BloodHound's pre-built queries, and each mirrors a check in analysis.py.
-CYPHER_QUERIES = (
-    (
-        "Everything imported from agentlab",
-        "MATCH (n:AgentLab) RETURN n",
-    ),
-    (
-        "Nodes implicated in a finding",
-        "MATCH (n:Tainted) RETURN n ORDER BY n.max_severity",
-    ),
-    (
-        "Which agents can untrusted documents reach?",
-        "MATCH p = (d:Document)-[:CanInject|Produces|FlowsTo|CanCoerce*1..]->"
-        "(a:Agent) RETURN p",
-    ),
-    (
-        "Shortest path from a document to any tool",
-        "MATCH p = shortestPath((d:Document)-"
-        "[:CanInject|Produces|FlowsTo|CanCoerce|AllowedToCall*1..]->(t:Tool)) "
-        "RETURN p",
-    ),
-    (
-        "Write-capable tools and what guards them",
-        "MATCH (t:Tool) WHERE t.read_only = false "
-        "OPTIONAL MATCH (t)-[:GuardedBy]->(g) RETURN t, g",
-    ),
-    (
-        "Confused deputies: who can steer whose tools",
-        "MATCH (a:Agent)-[:CanCoerce]->(b:Agent)-[:AllowedToCall]->(t:Tool) "
-        "WHERE NOT (a)-[:AllowedToCall]->(t) RETURN a, b, t",
-    ),
-    (
-        "Agents sharing one model (cross-checks that are not independent)",
-        "MATCH (a:Agent)-[:RunsOn]->()-[:BackedBy]->(m:Model)<-[:BackedBy]-()"
-        "<-[:RunsOn]-(b:Agent) WHERE a.name < b.name RETURN a, b, m",
-    ),
-    (
-        "Denied at run time (requires --trace-file)",
-        "MATCH p = (:Agent)-[:Denied]->(:Tool) RETURN p",
-    ),
-)
-
 
 def build_graph(args: argparse.Namespace) -> Graph:
     graph = collect_static(
@@ -223,6 +175,24 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--export-queries",
+        type=Path,
+        default=None,
+        help=(
+            "Write the saved-query pack here as a ZIP, for BloodHound's "
+            "Cypher → saved queries import."
+        ),
+    )
+    parser.add_argument(
+        "--register-queries",
+        metavar="URL",
+        default=None,
+        help=(
+            "Install the saved Cypher queries into a running BloodHound CE. "
+            f"Needs {TOKEN_ID_VARIABLE} and {TOKEN_KEY_VARIABLE}."
+        ),
+    )
+    parser.add_argument(
         "--cypher",
         action="store_true",
         help="Print starter Cypher queries for BloodHound's console and exit.",
@@ -244,9 +214,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.cypher:
-        for title, query in CYPHER_QUERIES:
-            print(f"// {title}")
-            print(query)
+        for saved in QUERIES:
+            print(f"// {saved.name}")
+            print(f"//   {saved.description}")
+            print(saved.query)
             print()
         return
 
@@ -263,7 +234,24 @@ def main() -> None:
             f"({len(ICONS)} node kinds). Reload the BloodHound tab — the UI "
             "caches icon definitions."
         )
-    if (args.export_icons or args.register_icons) and not args.export:
+    if args.export_queries:
+        print(f"Query pack written to {write_queries(args.export_queries)}")
+    if args.register_queries:
+        load_dotenv(PROJECT_ROOT / ".env")
+        result = register_queries(args.register_queries)
+        print(
+            f"Saved queries at {args.register_queries}: "
+            f"{len(result.created)} created, {len(result.updated)} updated "
+            f"({len(QUERIES)} total). Find them under Explore → Cypher."
+        )
+
+    side_effects = (
+        args.export_icons
+        or args.register_icons
+        or args.export_queries
+        or args.register_queries
+    )
+    if side_effects and not args.export:
         return
 
     if not args.config_dir.is_dir():

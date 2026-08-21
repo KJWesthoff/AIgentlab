@@ -6,3 +6,4 @@ __pycache__/
 .pytest_cache/
 data/runs/
 data/*-opengraph.json
+data/agentlab-queries.zip

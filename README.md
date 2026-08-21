@@ -161,6 +161,8 @@ layer:
 │  graph/analysis          pre-built attack-path queries          │
 │  graph/export            BloodHound OpenGraph JSON              │
 │  graph/icons             custom node-kind icons for the UI      │
+│  graph/queries           saved Cypher queries (the demo set)    │
+│  graph/bloodhound        signed API client (bhesignature HMAC)   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -218,6 +220,8 @@ layer:
 | `collect.py` | Two collectors, mirroring BloodHound's SharpHound/session split. `collect_static()` reads `agents.yaml`, `models.yaml`, the tool registry and the corpus — what configuration *permits*, buildable with nothing running. `collect_runtime()` replays a JSONL trace and adds what *happened*: `Called` edges, `Denied` edges, and confirmation of which documents genuinely entered a context. The two stay distinct so the gap between them is visible. `PIPELINE` declares the artifact hand-offs mirroring `Workflow.execute` (plain Python, not introspectable); a test fails if the two drift. |
 | `analysis.py` | The pre-built queries. `untrusted-to-write-tool` (this system's "shortest path to Domain Admin"), `confused-deputy` (an agent steering a tool it was never granted, via one that was), `indirect-injection-reach` (agents tainted through artifacts without reading a document), `crosscheck-not-independent` (writer and reviewer on one model), plus hygiene checks — dangling grants, capability gaps, orphaned tools — and the runtime pair `runtime-drift` / `observed-denial`. Read-only: it reports, `policy.py` enforces. |
 | `export.py` | `to_opengraph()` / `write_opengraph()` — BloodHound CE **OpenGraph** JSON: custom node and edge kinds rather than pretending agents are AD users. Findings fold onto the nodes they implicate (`finding_count`, `max_severity`), and flagged nodes get a third kind `Tainted` so `MATCH (n:Tainted)` works in the Cypher console. Respects the format's limits: ≤3 kinds per node, flat properties only. |
+| `bloodhound.py` | `BloodHoundClient` — the signed API client. BloodHound does not accept bearer tokens: a token is an *id* plus a *key*, and `sign_request()` implements the `bhesignature` chain (three HMAC-SHA256 digests over method+URI, the timestamp truncated to the hour, then the exact body). The key signs and is never transmitted. Credentials come from `BLOODHOUND_TOKEN_ID` / `BLOODHOUND_TOKEN_KEY`. |
+| `queries.py` | The saved Cypher query set — fifteen queries mirroring the checks in `analysis.py`, prefixed `agentlab:` and ordered as a demo runs. `write_queries()` emits a ZIP in BloodHound's own import format (one JSON per query); `register_queries()` installs them over the API, updating by name rather than duplicating. |
 | `icons.py` | The custom node-kind icon pack for BloodHound's `/api/v2/custom-nodes` endpoint. Font Awesome free-solid names plus a palette that encodes trust: warm for attacker-influenceable content, gold for privilege, green for controls, cool for infrastructure. `register_icons()` POSTs it to a running instance, signing requests with `sign_request()` (BloodHound's chained-HMAC `bhesignature` scheme — bearer tokens are rejected) and reading `BLOODHOUND_TOKEN_ID` / `BLOODHOUND_TOKEN_KEY` from the environment, so no credential lands in the repo. |
 | `cli.py` | `agentlab-graph` — builds, analyzes, exports. `--trace-file` overlays a run, `--export` writes the OpenGraph file, `--export-icons` / `--register-icons` handle the icon pack, `--cypher` prints starter queries, `--json` emits machine-readable findings, `--fail-on` turns it into a CI gate. |
 
@@ -230,7 +234,7 @@ layer:
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call budget. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 72 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, and icon registration against clean, fully-registered and partly-registered instances). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 78 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -541,8 +545,33 @@ agentlab-graph --export graph.json
 Findings ride along on the nodes they implicate (`finding_count`,
 `max_severity`, `findings`), and any flagged node carries a third kind
 `Tainted`, so a demo can open on `MATCH (n:Tainted) RETURN n` rather than
-hunting through the graph. `agentlab-graph --cypher` prints the rest of
-the starter queries.
+hunting through the graph. ### Saved queries
+
+Explore opens on an empty canvas, so a freshly ingested graph looks like
+nothing was uploaded. Install the query set and it has somewhere to
+start:
+
+```bash
+agentlab-graph --register-queries http://127.0.0.1:8080
+# or, to import by hand: Explore → Cypher → import
+agentlab-graph --export-queries queries.zip
+```
+
+Fifteen queries, prefixed `agentlab:` so they are easy to find and
+remove as a set, ordered the way a demo runs — overview, then the taint
+story, then composed-permission failures, then hygiene and runtime
+evidence. Each mirrors a check in `analysis.py`, so the CLI findings and
+the UI tell the same story. `agentlab-graph --cypher` prints them all as
+text.
+
+Registration is idempotent by name: re-running updates in place instead
+of leaving a second copy in the sidebar, and queries this project did
+not create are never touched.
+
+Start the demo on **`agentlab: Overview — the security-relevant graph`**.
+It deliberately omits the model/profile/provider plumbing, which is real
+but says nothing about attack paths and would otherwise dominate the
+picture.
 
 ### Icons
 

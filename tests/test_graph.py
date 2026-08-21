@@ -10,6 +10,7 @@ these dangerous shapes have to be constructed to be tested.
 import datetime
 import json
 import re
+import zipfile
 from pathlib import Path
 
 import httpx
@@ -19,17 +20,21 @@ from pydantic import BaseModel
 
 from agentlab.agents.definitions import load_agents
 from agentlab.graph.analysis import Severity, analyze
-from agentlab.graph.collect import PIPELINE, collect_runtime, collect_static
-from agentlab.graph.export import MAX_KINDS, RESERVED_PROPERTIES, to_opengraph
-from agentlab.graph.icons import (
-    ICONS,
+from agentlab.graph.bloodhound import (
     TOKEN_ID_VARIABLE,
     TOKEN_KEY_VARIABLE,
-    register_icons,
     sign_request,
-    write_icons,
 )
+from agentlab.graph.collect import PIPELINE, collect_runtime, collect_static
+from agentlab.graph.export import MAX_KINDS, RESERVED_PROPERTIES, to_opengraph
+from agentlab.graph.icons import ICONS, register_icons, write_icons
 from agentlab.graph.model import TAINT_EDGES, EdgeKind, Graph, NodeKind
+from agentlab.graph.queries import (
+    PREFIX,
+    QUERIES,
+    register_queries,
+    write_queries,
+)
 from agentlab.tools.definitions import Tool, ToolDefinition
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -552,7 +557,7 @@ def test_registering_icons_needs_both_halves_of_the_token(monkeypatch):
         register_icons("http://127.0.0.1:8080")
 
 
-def fake_bloodhound(monkeypatch, existing=(), failures=None):
+def fake_bloodhound(monkeypatch, existing=(), failures=None, saved_queries=()):
     """Stand in for a BloodHound instance, recording what it was sent.
 
     Only the HTTP boundary is replaced — the payload, the signature chain
@@ -576,6 +581,8 @@ def fake_bloodhound(monkeypatch, existing=(), failures=None):
         )
         if (method, uri) in failures:
             return httpx.Response(failures[(method, uri)], text="denied")
+        if method == "GET" and uri == "/api/v2/saved-queries":
+            return httpx.Response(200, json={"data": list(saved_queries)})
         if method == "GET":
             return httpx.Response(
                 200,
@@ -648,6 +655,79 @@ def test_registering_icons_surfaces_a_failure_body(monkeypatch):
     )
     with pytest.raises(SystemExit, match="403"):
         register_icons("http://127.0.0.1:8080")
+
+
+# --- Saved Cypher queries ------------------------------------------------
+
+
+def test_every_query_is_named_scoped_and_documented():
+    """The prefix is how an operator finds and removes this project's set."""
+    for saved in QUERIES:
+        assert saved.full_name.startswith(f"{PREFIX}: ")
+        assert saved.description
+        assert saved.query.strip().upper().startswith(("MATCH", "OPTIONAL"))
+
+    names = [q.full_name for q in QUERIES]
+    assert len(names) == len(set(names))
+
+
+def test_queries_only_traverse_kinds_the_exporter_emits():
+    """A query naming a kind we never emit silently returns nothing."""
+    known = {k.value for k in NodeKind} | {k.value for k in EdgeKind}
+    known |= {"AgentLab", "Tainted"}
+
+    for saved in QUERIES:
+        # Bare capitalised words in a query are kinds or Cypher keywords.
+        for token in re.findall(r"[:|]([A-Z][A-Za-z]+)", saved.query):
+            assert token in known, f"{saved.name!r} references {token!r}"
+
+
+def test_query_pack_is_importable_by_bloodhound(tmp_path):
+    """One JSON file per query, matching BloodHound's own export format."""
+    archive = write_queries(tmp_path / "queries.zip")
+
+    with zipfile.ZipFile(archive) as bundle:
+        names = bundle.namelist()
+        assert len(names) == len(QUERIES)
+        for name in names:
+            entry = json.loads(bundle.read(name))
+            assert set(entry) == {"name", "query", "description"}
+            assert entry["name"].startswith(PREFIX)
+
+
+def test_registering_queries_creates_them_on_a_clean_instance(monkeypatch):
+    calls = fake_bloodhound(monkeypatch)
+    result = register_queries("http://127.0.0.1:8080")
+
+    assert len(result.created) == len(QUERIES)
+    assert result.updated == ()
+    assert [c["method"] for c in calls] == ["GET"] + ["POST"] * len(QUERIES)
+
+
+def test_registering_queries_updates_rather_than_duplicating(monkeypatch):
+    """Re-running must not leave a second copy in the operator's sidebar."""
+    installed = [
+        {"id": index, "name": saved.full_name}
+        for index, saved in enumerate(QUERIES, start=1)
+    ]
+    calls = fake_bloodhound(monkeypatch, saved_queries=installed)
+    result = register_queries("http://127.0.0.1:8080")
+
+    assert result.created == ()
+    assert len(result.updated) == len(QUERIES)
+    assert [c["method"] for c in calls] == ["GET"] + ["PUT"] * len(QUERIES)
+    # Updates address the existing query by id, not by name.
+    assert calls[1]["uri"] == "/api/v2/saved-queries/1"
+
+
+def test_registering_queries_leaves_other_peoples_queries_alone(monkeypatch):
+    calls = fake_bloodhound(
+        monkeypatch, saved_queries=[{"id": 99, "name": "someone else's query"}]
+    )
+    result = register_queries("http://127.0.0.1:8080")
+
+    assert len(result.created) == len(QUERIES)
+    assert all("/99" not in c["uri"] for c in calls)
 
 
 #: Golden value transcribed independently from SpecterOps' documented

@@ -21,26 +21,16 @@ prefix, as BloodHound's API requires.
 
 from __future__ import annotations
 
-import base64
-import datetime
-import hashlib
-import hmac
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .bloodhound import BloodHoundClient
 from .model import NodeKind
 
 #: Where BloodHound CE registers custom node kinds.
 ICON_ENDPOINT = "/api/v2/custom-nodes"
 
-#: BloodHound issues a token as an *id* plus a *key*. The id identifies the
-#: token in the Authorization header; the key never leaves this process —
-#: it signs the request instead. Both are read from the environment or
-#: .env so neither lands in the repo or in shell history.
-TOKEN_ID_VARIABLE = "BLOODHOUND_TOKEN_ID"
-TOKEN_KEY_VARIABLE = "BLOODHOUND_TOKEN_KEY"
 
 
 @dataclass(frozen=True)
@@ -93,40 +83,6 @@ def write_icons(path: Path) -> Path:
     return path
 
 
-def sign_request(
-    method: str,
-    uri: str,
-    body: bytes,
-    token_key: str,
-    when: datetime.datetime | None = None,
-) -> tuple[str, str]:
-    """Compute BloodHound's ``bhesignature`` for one request.
-
-    Three HMAC-SHA256 digests chained, each keyed by the previous digest:
-    the method and URI path, then the timestamp truncated to the hour,
-    then the exact request body. Chaining means changing any part of the
-    request invalidates the signature, and the hour truncation is what
-    bounds replay — a signature is only good for the hour it was made, so
-    a clock skewed past that window fails with a token error rather than
-    anything more descriptive.
-
-    Returns ``(RequestDate header, Signature header)``.
-    """
-    when = when or datetime.datetime.now().astimezone()
-    formatted = when.isoformat("T")
-
-    digester = hmac.new(token_key.encode(), None, hashlib.sha256)
-    digester.update(f"{method}{uri}".encode())
-
-    digester = hmac.new(digester.digest(), None, hashlib.sha256)
-    digester.update(formatted[:13].encode())
-
-    digester = hmac.new(digester.digest(), None, hashlib.sha256)
-    digester.update(body)
-
-    return formatted, base64.b64encode(digester.digest()).decode()
-
-
 @dataclass(frozen=True)
 class Registration:
     """What registering actually changed, so the CLI can say so."""
@@ -136,63 +92,22 @@ class Registration:
 
 
 def register_icons(
-    base_url: str,
-    token_id: str | None = None,
-    token_key: str | None = None,
+    base_url: str, client: BloodHoundClient | None = None
 ) -> Registration:
     """Register or refresh every node-kind icon on a running BloodHound.
 
     Idempotent, because the collection endpoint only creates. Ingesting a
     graph already registers its kinds — without icons — so a plain POST
     comes back ``409 duplicate kind name``, and since the batch is atomic
-    one existing kind rejects all of them. Updating is a per-kind ``PUT``
-    to ``/api/v2/custom-nodes/{kind_name}``; there is no batch update, so
-    this lists what exists, creates the rest in one POST, and PUTs the
-    remainder one at a time.
-
-    BloodHound's API does not accept bearer tokens — the key signs each
-    request and is never transmitted.
+    one existing kind rejects all of them. There is no batch update
+    either: ``PUT`` lives at ``/api/v2/custom-nodes/{kind_name}``, one
+    kind at a time, and a ``PUT`` to the collection is a ``405``. So this
+    lists what exists, creates the rest in one POST, and PUTs the
+    remainder individually.
     """
-    import json
+    client = client or BloodHoundClient.from_environment(base_url)
 
-    import httpx
-
-    token_id = token_id or os.environ.get(TOKEN_ID_VARIABLE)
-    token_key = token_key or os.environ.get(TOKEN_KEY_VARIABLE)
-    if not token_id or not token_key:
-        raise SystemExit(
-            f"Set {TOKEN_ID_VARIABLE} and {TOKEN_KEY_VARIABLE} (in the "
-            "environment or .env). BloodHound shows both when you create a "
-            "token under Administration → API Tokens; the key is only "
-            "displayed once. Both are required — the API signs requests "
-            "with the key rather than sending it."
-        )
-
-    def send(method: str, uri: str, payload: Any | None = None) -> Any:
-        # Body and URI are both signed, so serialize once and send those
-        # exact bytes; re-encoding would invalidate the signature.
-        body = b"" if payload is None else json.dumps(payload).encode()
-        request_date, signature = sign_request(method, uri, body, token_key)
-        response = httpx.request(
-            method,
-            base_url.rstrip("/") + uri,
-            content=body,
-            headers={
-                "Authorization": f"bhesignature {token_id}",
-                "RequestDate": request_date,
-                "Signature": signature,
-                "Content-Type": "application/json",
-            },
-            timeout=30.0,
-        )
-        if response.status_code >= 400:
-            raise SystemExit(
-                f"BloodHound rejected {method} {uri} "
-                f"({response.status_code}): {response.text[:500]}"
-            )
-        return response.json() if response.content else None
-
-    listing = send("GET", ICON_ENDPOINT) or {}
+    listing = client.request("GET", ICON_ENDPOINT) or {}
     known = {
         entry.get("kindName")
         for entry in (listing.get("data") or [])
@@ -203,10 +118,10 @@ def register_icons(
     present = {k: v for k, v in ICONS.items() if k.value in known}
 
     if missing:
-        send("POST", ICON_ENDPOINT, _payload_for(missing))
+        client.request("POST", ICON_ENDPOINT, _payload_for(missing))
 
     for kind, icon in present.items():
-        send(
+        client.request(
             "PUT",
             f"{ICON_ENDPOINT}/{kind.value}",
             {"config": {"icon": _icon_entry(icon)}},

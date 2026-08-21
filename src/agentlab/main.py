@@ -21,9 +21,11 @@ from .llm.openrouter import OpenRouterProvider
 from .llm.registry import ModelRegistry
 from .llm.service import LLMService
 from .observability.trace import Tracer, TraceWriter
+from .orchestration.approval import Approver, ConsoleApprover
 from .orchestration.state import BudgetTracker, ExecutionBudget
 from .orchestration.workflow import Workflow
 from .tools.registry import build_default_tools
+from .tools.write_report import build_write_tools
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OBJECTIVE = (
@@ -38,6 +40,7 @@ async def run(
     corpus_dir: Path,
     search_mode: str,
     tracer: Tracer | None = None,
+    approver: Approver | None = None,
 ) -> None:
     registry = ModelRegistry.from_yaml(config_dir / "models.yaml")
     agents = load_agents(config_dir / "agents.yaml")
@@ -55,6 +58,10 @@ async def run(
     else:
         tools = build_default_tools(corpus_dir)
 
+    # The only tool here that changes state. It is gated on a human by
+    # policy.py, so without --approve-writes every call to it is denied.
+    tools.update(build_write_tools())
+
     load_dotenv(PROJECT_ROOT / ".env")
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -69,7 +76,11 @@ async def run(
     )
     tracker = BudgetTracker(budget=ExecutionBudget())
     runtime = AgentRuntime(
-        service=service, tools=tools, tracker=tracker, tracer=tracer
+        service=service,
+        tools=tools,
+        tracker=tracker,
+        tracer=tracer,
+        approver=approver,
     )
     workflow = Workflow(
         runtime=runtime, agents=agents, tracker=tracker, tracer=tracer
@@ -126,6 +137,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--approve-writes",
+        action="store_true",
+        help=(
+            "Prompt for approval when an agent proposes a write-capable "
+            "tool call. Without this, such calls are denied outright."
+        ),
+    )
+    parser.add_argument(
         "--live",
         action="store_true",
         help=(
@@ -154,6 +173,7 @@ def main() -> None:
     if not args.corpus_dir.is_dir():
         raise SystemExit(f"Corpus directory not found: {args.corpus_dir}")
 
+    approver = ConsoleApprover() if args.approve_writes else None
     tracer = None
     server = None
     if args.live or args.trace_file:
@@ -176,6 +196,7 @@ def main() -> None:
                 args.corpus_dir,
                 args.search_mode,
                 tracer=tracer,
+                approver=approver,
             )
         )
         if server is not None:

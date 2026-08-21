@@ -152,6 +152,14 @@ QUERIES: tuple[SavedQuery, ...] = (
         "MATCH p = (:Agent)-[:Called|Denied]->(:Tool) RETURN p",
     ),
     SavedQuery(
+        "Approval gates that stopped asking",
+        "Write-capable calls approved for a whole run rather than per "
+        "call — the gate is still on the path but no longer per-call. "
+        "Requires an export made with --trace-file.",
+        "MATCH p = (:Agent)-[r:Approved]->(:Tool) "
+        "WHERE r.scope = 'session' RETURN p",
+    ),
+    SavedQuery(
         "Permitted but never used",
         "Grants a real run never exercised — the least-privilege backlog. "
         "Requires an export made with --trace-file.",

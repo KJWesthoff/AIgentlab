@@ -15,9 +15,10 @@ from pydantic import BaseModel, ValidationError
 
 from ..llm.interface import extract_json
 from ..llm.service import LLMService
-from ..llm.types import GenerationRequest, Message, Role
+from ..llm.types import GenerationRequest, Message, Role, ToolCall
 from ..observability.trace import Tracer, budget_snapshot, serialize_messages, truncate
-from ..orchestration.policy import authorize_tool_call
+from ..orchestration.approval import Approver, DenyingApprover
+from ..orchestration.policy import PolicyDecision, authorize_tool_call
 from ..orchestration.state import BudgetTracker, TaskState
 from ..tools.definitions import Tool
 from .definitions import AgentSpec
@@ -37,11 +38,14 @@ class AgentRuntime:
         tools: dict[str, Tool],
         tracker: BudgetTracker,
         tracer: Tracer | None = None,
+        approver: Approver | None = None,
     ) -> None:
         self._service = service
         self._tools = tools
         self._tracker = tracker
         self._tracer = tracer or Tracer()
+        # Fails closed: without an approver, write-capable tools stay denied.
+        self._approver = approver or DenyingApprover()
 
     async def run_text(
         self,
@@ -221,6 +225,9 @@ class AgentRuntime:
                     reason=decision.reason,
                 )
 
+                if not decision.allowed and decision.requires_approval:
+                    decision = self._seek_approval(agent, state, call, tool)
+
                 if not decision.allowed:
                     state.log(
                         "policy_denial",
@@ -266,6 +273,53 @@ class AgentRuntime:
 
         return messages
 
+    def _seek_approval(
+        self,
+        agent: AgentSpec,
+        state: TaskState,
+        call: ToolCall,
+        tool: Tool | None,
+    ) -> PolicyDecision:
+        """Ask the human, and record what kind of answer came back.
+
+        A session-scoped grant is approval for every later call to this
+        tool, so it is traced distinctly from a per-call one. The graph
+        analyzer reads that distinction back out and reports it — an
+        approval gate that was answered once and then stopped asking is
+        no longer a per-call control.
+        """
+        self._tracer.emit(
+            "approval_requested",
+            agent=agent.name,
+            tool=call.name,
+            arguments=call.arguments,
+        )
+        outcome = self._approver.request(
+            agent=agent.name,
+            tool=call.name,
+            arguments=call.arguments,
+            preview=_preview(call.arguments),
+        )
+        state.log(
+            "approval",
+            agent=agent.name,
+            tool=call.name,
+            approved=outcome.approved,
+            scope=outcome.scope.value,
+        )
+        self._tracer.emit(
+            "approval_decision",
+            agent=agent.name,
+            tool=call.name,
+            approved=outcome.approved,
+            scope=outcome.scope.value,
+            reason=outcome.reason,
+        )
+
+        if not outcome.approved:
+            return PolicyDecision(False, outcome.reason, requires_approval=True)
+        return PolicyDecision(True, f"Approved by human ({outcome.scope.value}).")
+
     @staticmethod
     def _initial_messages(agent: AgentSpec, task_input: str) -> list[Message]:
         return [
@@ -279,3 +333,9 @@ class AgentRuntime:
             ),
             Message(role=Role.USER, content=task_input),
         ]
+
+
+def _preview(arguments: dict) -> str:
+    """The longest string argument, which is the payload worth eyeballing."""
+    candidates = [v for v in arguments.values() if isinstance(v, str)]
+    return max(candidates, key=len) if candidates else ""

@@ -64,6 +64,7 @@ class EdgeKind(str, Enum):
     # --- Observed at runtime, not granted by configuration ---
     CALLED = "Called"
     DENIED = "Denied"
+    APPROVED = "Approved"
 
 
 #: Edges a path may traverse when asking "can untrusted content starting

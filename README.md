@@ -151,6 +151,8 @@ layer:
 │  tools/corpus            recursive, code-aware chunking         │
 │  tools/registry          search_documents (keyword variant)     │
 │  tools/vector_search     search_documents (semantic, default)   │
+│  tools/write_report      save_report — the one tool that writes │
+│  orchestration/approval  human gate in front of write tools     │
 ├─────────────────────────────────────────────────────────────────┤
 │  observability/trace     opt-in JSONL run trace: context        │
 │                          windows, policy/budget decisions       │
@@ -193,6 +195,7 @@ layer:
 |---|---|
 | `workflow.py` | `Workflow.execute(objective)` — the deterministic pipeline: researcher → analyst → writer → reviewer, then at most `MAX_REVISIONS = 1` rewrite if the reviewer rejects. Returns a `WorkflowResult` bundling the final answer, all intermediate artifacts, the approval status and the budget totals. The routing is ordinary Python — no tokens are spent asking a supervisor what to do next. |
 | `policy.py` | `authorize_tool_call(agent, tool_name, tool)` — the policy enforcement point. Denies tools missing from the agent's allowlist, denies tools that don't exist, and denies write-capable tools with `requires_approval=True` (the hook for a future human-approval gate). A model output is **never** authorization. |
+| `approval.py` | `Approver` — how a human answers the gate `policy.py` opens. `DenyingApprover` is the default and fails closed, so an unattended run never gains write access. `ConsoleApprover` prompts on the terminal with `[y] once / [a] rest of the run / [N] deny`. The session grant is the fatigue vector, modeled deliberately: taking it turns a per-call control into a per-session one, later calls execute unattended, and the trace still says "approved". Scope is recorded distinctly so `graph/analysis.py` can report it. |
 | `state.py` | `ExecutionBudget` (caps: model calls, tool calls, input/output tokens, USD) and `BudgetTracker` (`before_model_call()` / `before_tool_call()` raise `BudgetExceeded`; `record_*()` accumulate actuals from each response's `Usage`). Also `TaskState` — the per-run audit log: every model call, tool call and policy denial is appended to `history`. |
 
 ### `src/agentlab/tools/` — what agents may touch
@@ -202,6 +205,7 @@ layer:
 | `definitions.py` | `Tool` = `ToolDefinition` (name, description, risk, `read_only`) + a Pydantic input model + a callable. `execute()` validates model-produced arguments against the input model **before** the function runs — arbitrary dicts from an LLM never reach real code. `to_specification()` exports the schema the model sees. |
 | `corpus.py` | `load_chunks()` — shared corpus loader/chunker used by both search variants. Finds `*.md` recursively, splits on blank lines but never inside fenced code, re-attaches code blocks (fenced or indented) to the prose above them so examples keep their explanation, prefixes each chunk with its section heading (markdown `#` and RST underlined titles both recognized), strips YAML frontmatter, and drops fragments under 80 chars (navigation lines, orphaned signatures). |
 | `registry.py` | `build_default_tools()` — keyword-search variant of `search_documents`: ranks paragraphs across the corpus dir's `*.md` files by distinct query terms matched, then total occurrences. Zero model dependencies; used by the test suite and `--search-mode keyword`. |
+| `write_report.py` | `build_write_tools()` — `save_report`, the only tool here that changes state, and therefore the sink the permission graph's critical check looks for. Writes markdown to a confined reports directory; `resolve_report_path()` rejects absolute paths, traversal, nested directories and symlinked escapes by checking the *resolved* path, because the filename is model-supplied and the model may be acting on attacker-influenced text. Confinement bounds the blast radius but does not make the call safe, so it stays `read_only=False` and gated on a human. |
 | `vector_search.py` | `build_vector_tools()` — semantic variant of the same `search_documents` tool (identical name/schema, so agent allowlists don't change). Embeds each corpus chunk with a small local ONNX model (fastembed, `BAAI/bge-small-en-v1.5`, no torch) and ranks by cosine similarity, so query phrasing need not match document wording. Vectors are cached in `.vector-index.npz` next to the corpus, keyed by a content fingerprint — chunks re-embed only when the corpus or model changes. Embedding is CPU-bound and scales with corpus size: the bundled coding corpus (9,481 chunks) takes ~30–45 min to index once and yields a ~14 MB cache file. The CLI default. |
 
 ### `src/agentlab/observability/` — the live trace viewer
@@ -234,7 +238,7 @@ layer:
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call budget. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 78 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 106 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -524,11 +528,59 @@ The analyst was never granted that tool. It doesn't need to be: its
 output steers an agent that has it. Structurally this is a user who is
 not a Domain Admin but sits in a group nested inside one.
 
-Note that `untrusted-to-write-tool` — the critical one — cannot fire on
-the current config, because no write-capable tool is registered yet. It
-lights up as soon as one is (the MCP gateway on the roadmap, for
-instance), and until then the check is covered by tests rather than by
-the live graph.
+### The write tool and the approval gate
+
+`save_report` is the one tool here that changes state — it writes real
+markdown files to `data/reports/`. The writer holds it, which is what
+makes the critical path real rather than hypothetical:
+
+```
+ ! [untrusted-to-write-tool] Untrusted content can reach write-capable tool 'save_report'
+     path: prompt-injection.md -[CanInject]-> researcher -[CanCoerce]-> writer
+           -[AllowedToCall]-> save_report
+```
+
+It is `high` rather than `critical` because a human approval gate sits on
+the path — `policy.py` refuses write-capable calls, and without
+`--approve-writes` they are simply denied:
+
+```bash
+agentlab --approve-writes --trace-file run.jsonl "... and save the answer"
+```
+
+```
+╭──────────────────────────────────────────────────────────────────╮
+  Approval required — write-capable tool
+
+  agent:  writer
+  tool:   save_report
+  filename: rag-vs-database-lookup.md
+  content:  # RAG vs a plain database lookup  Retrieval...
+╰──────────────────────────────────────────────────────────────────╯
+  [y] approve once   [a] approve for the rest of this run   [N] deny
+```
+
+That third option is the point. Prompting on every call is unusable, so
+every real implementation offers "don't ask again" — and the moment it is
+taken, a per-call control becomes a per-session one. Later calls execute
+with nobody watching, and the trace still records them as approved:
+
+```
+  ✓ save_report auto-approved for writer (session grant — not shown to a human)
+```
+
+The graph reports it, which is the part worth showing. Feed the run back
+in with `--trace-file` and the gate that still appears on every diagram
+is named for what it actually did:
+
+```
+ ! [approval-fatigue] 'save_report' was approved for the whole run, not per call
+```
+
+A reviewer reading the architecture sees a control. The graph, reading
+the trace, sees a control that was answered once. Those are different
+things, and only one of them survives contact with a human who has been
+asked eleven times already.
 
 ### Viewing it in BloodHound CE
 

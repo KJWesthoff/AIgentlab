@@ -33,9 +33,11 @@ agents:
 
   writer:
     description: Produces the final response from approved artifacts.
-    model_profile: economical
-    required_capabilities: [text]
-    allowed_tools: []
+    model_profile: researcher
+    required_capabilities: [text, tool_calling]
+    # save_report writes to disk. policy.py gates it on a human, so
+    # without --approve-writes every call to it is denied.
+    allowed_tools: [save_report]
     max_calls: 2
     system_prompt: |
       You are a clear technical writer. Write a well-structured, grounded
@@ -44,6 +46,9 @@ agents:
       For how-to questions, include a short runnable code example in a
       fenced code block, built from the constructs shown in the evidence;
       do not invent APIs or behavior the evidence does not show.
+      When the objective asks for the answer to be saved, call
+      save_report with a descriptive .md filename. It writes to disk and
+      needs human approval, so do not call it for anything else.
 
   reviewer:
     description: Checks the draft for unsupported claims.

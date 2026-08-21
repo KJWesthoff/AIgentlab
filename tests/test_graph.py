@@ -173,14 +173,43 @@ def test_untrusted_documents_reach_every_agent(real_graph):
     assert reached == {"researcher", "analyst", "writer", "reviewer"}
 
 
-def test_shipped_config_has_no_high_severity_findings(real_graph):
-    report = analyze(real_graph)
-    severe = [
-        f
-        for f in report.findings
+def test_shipped_config_findings_are_the_expected_ones(real_graph):
+    """The shipped config deliberately contains the demo attack path.
+
+    Granting the writer save_report is what makes the critical check
+    real, so "no high findings" is the wrong assertion — this pins the
+    exact set instead, and fails if a config change adds or drops one.
+    """
+    checks = {
+        f.check
+        for f in analyze(real_graph).findings
         if f.severity in (Severity.CRITICAL, Severity.HIGH)
+    }
+    assert checks == {"untrusted-to-write-tool", "indirect-injection-reach"}
+
+
+def test_untrusted_content_reaches_the_real_write_tool(real_graph):
+    """The headline path, on the shipped config rather than a fixture."""
+    findings = [
+        f
+        for f in analyze(real_graph).findings
+        if f.check == "untrusted-to-write-tool"
     ]
-    assert severe == [], [f.title for f in severe]
+    # One per write-capable tool, not one per document.
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.HIGH  # gated on a human
+    assert findings[0].path.endswith(
+        "writer -[AllowedToCall]-> save_report"
+    )
+
+
+def test_the_write_tool_is_gated_on_a_human(real_graph):
+    gate = real_graph.outgoing(
+        f"{TOOL}:save_report", frozenset({EdgeKind.GUARDED_BY})
+    )
+    assert [real_graph.node(e.target).kind for e in gate] == [
+        NodeKind.APPROVAL_GATE
+    ]
 
 
 def test_downstream_agents_are_flagged_as_indirectly_reachable(real_graph):
@@ -425,6 +454,51 @@ def test_runtime_overlay_tolerates_a_partial_final_line(real_graph, tmp_path):
     assert real_graph.outgoing(
         f"{AGENT}:researcher", frozenset({EdgeKind.CALLED})
     )
+
+
+def test_a_session_wide_approval_is_reported_as_fatigue(real_graph, tmp_path):
+    """The gate stayed on the path but stopped being a per-call control."""
+    trace = write_trace(
+        tmp_path / "run.jsonl",
+        [
+            {
+                "event": "approval_decision",
+                "agent": "writer",
+                "tool": "save_report",
+                "approved": True,
+                "scope": "session",
+            }
+        ],
+    )
+    collect_runtime(real_graph, trace)
+
+    findings = [
+        f for f in analyze(real_graph).findings if f.check == "approval-fatigue"
+    ]
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.HIGH
+    assert findings[0].nodes == (f"{AGENT}:writer", f"{TOOL}:save_report")
+
+
+def test_a_per_call_approval_is_not_reported_as_fatigue(real_graph, tmp_path):
+    """Answering every prompt is the gate working — not a finding."""
+    trace = write_trace(
+        tmp_path / "run.jsonl",
+        [
+            {
+                "event": "approval_decision",
+                "agent": "writer",
+                "tool": "save_report",
+                "approved": True,
+                "scope": "once",
+            }
+        ],
+    )
+    collect_runtime(real_graph, trace)
+
+    assert not [
+        f for f in analyze(real_graph).findings if f.check == "approval-fatigue"
+    ]
 
 
 def test_a_call_without_a_grant_is_critical_drift(real_graph, tmp_path):

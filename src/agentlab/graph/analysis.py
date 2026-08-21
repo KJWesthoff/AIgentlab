@@ -75,6 +75,7 @@ def analyze(graph: Graph) -> Report:
         _tool_grant_without_tool_calling,
         _orphaned_tools,
         _runtime_drift,
+        _approval_fatigue,
         _observed_denials,
     ):
         check(graph, report)
@@ -98,8 +99,10 @@ def _untrusted_to_write_tool(graph: Graph, report: Report) -> None:
     if not write_tools:
         return
 
-    for document in graph.of_kind(NodeKind.DOCUMENT):
-        for tool in write_tools:
+    # One finding per tool, not per document: every document in a corpus
+    # produces the same path, and repeating it buries the other findings.
+    for tool in write_tools:
+        for document in graph.of_kind(NodeKind.DOCUMENT):
             path = graph.shortest_path(document.id, tool.id, TAINT_EDGES)
             if path is None:
                 continue
@@ -133,8 +136,6 @@ def _untrusted_to_write_tool(graph: Graph, report: Report) -> None:
                     path=graph.describe_path(path),
                 )
             )
-            # One example path per tool is enough; every document in the
-            # corpus produces the same shape.
             break
 
 
@@ -494,6 +495,50 @@ def _runtime_drift(graph: Graph, report: Report) -> None:
                 remediation=(
                     "Confirm the trace and config come from the same run, "
                     "then audit authorize_tool_call in orchestration/policy.py."
+                ),
+                nodes=(edge.source, edge.target),
+            )
+        )
+
+
+def _approval_fatigue(graph: Graph, report: Report) -> None:
+    """A human approval gate that was answered once and stopped asking.
+
+    Every usable implementation of these gates offers "don't ask again",
+    because prompting on every call is unworkable. Taking that option
+    converts a per-call control into a per-session one: later calls
+    execute unattended, and the trace still records them as approved.
+
+    This matters most where it is least visible. The gate is still on the
+    path in the graph, so a reviewer reading the diagram sees a control
+    that is no longer doing the job the diagram implies.
+    """
+    for edge in graph.edges:
+        if edge.kind is not EdgeKind.APPROVED:
+            continue
+        if edge.properties.get("scope") != "session":
+            continue
+
+        report.add(
+            Finding(
+                check="approval-fatigue",
+                severity=Severity.HIGH,
+                title=(
+                    f"{graph.label(edge.target)!r} was approved for the whole "
+                    f"run, not per call"
+                ),
+                detail=(
+                    f"{graph.label(edge.source)!r} received a session-wide "
+                    f"grant for {graph.label(edge.target)!r}, so every later "
+                    "call executed without anyone seeing it. The approval "
+                    "gate is still on the path, which makes the control look "
+                    "stronger in review than it was in practice."
+                ),
+                remediation=(
+                    "Scope grants to a single call, or bound them — per "
+                    "argument, per count, or per elapsed time — so a tool "
+                    "reachable from untrusted content cannot inherit one "
+                    "answer for a whole run."
                 ),
                 nodes=(edge.source, edge.target),
             )

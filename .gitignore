@@ -7,3 +7,4 @@ __pycache__/
 data/runs/
 data/*-opengraph.json
 data/agentlab-queries.zip
+data/reports/

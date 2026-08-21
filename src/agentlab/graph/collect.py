@@ -27,6 +27,7 @@ from ..agents.definitions import AgentSpec, load_agents
 from ..llm.registry import ModelRegistry
 from ..tools.definitions import Tool
 from ..tools.registry import build_default_tools
+from ..tools.write_report import build_write_tools
 from .model import EdgeKind, Graph, NodeKind
 
 #: A large corpus would swamp the graph with document nodes that all say
@@ -81,15 +82,16 @@ def collect_static(
 ) -> Graph:
     """Build the permission graph from configuration alone.
 
-    ``tools`` defaults to the keyword tool registry. Both search backends
-    publish identical tool *definitions* — only the ranking differs — so
-    the cheap one is used to avoid downloading an embedding model just to
-    draw a graph.
+    ``tools`` defaults to everything main.py wires up. Both search
+    backends publish identical tool *definitions* — only the ranking
+    differs — so the cheap one is used to avoid downloading an embedding
+    model just to draw a graph.
     """
     graph = Graph()
     agents = load_agents(config_dir / "agents.yaml")
     registry = ModelRegistry.from_yaml(config_dir / "models.yaml")
-    tools = build_default_tools(corpus_dir) if tools is None else tools
+    if tools is None:
+        tools = {**build_default_tools(corpus_dir), **build_write_tools()}
 
     _add_models(graph, registry)
     _add_tools(graph, tools)
@@ -338,6 +340,16 @@ def _apply_event(graph: Graph, event: dict) -> None:
         if graph.has_node(tool_id):
             graph.add_edge(agent_id, tool_id, EdgeKind.CALLED)
         _record_observed_documents(graph, agent_id, event.get("result", ""))
+
+    elif kind == "approval_decision" and event.get("approved"):
+        tool_id = node_id(NodeKind.TOOL, event.get("tool", ""))
+        if graph.has_node(tool_id):
+            graph.add_edge(
+                agent_id,
+                tool_id,
+                EdgeKind.APPROVED,
+                scope=event.get("scope", "once"),
+            )
 
     elif kind == "artifact_produced":
         artifact = event.get("artifact_type", "")

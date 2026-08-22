@@ -873,9 +873,10 @@ of two runs.
 
 In **Explore → Cypher**, from the saved queries prefixed `agentlab:`.
 
-**1. Overview — the security-relevant graph.** ~16 nodes: agents, tools,
-documents, artifacts, and the approval gate. Model and provider plumbing
-is deliberately excluded — it is real, but it says nothing about attack
+**1. Overview — the security-relevant graph.** ~19 nodes: the principal
+and its scopes, agents, tools, documents, artifacts, and the approval
+gate — every boundary in one picture. Model and provider plumbing is
+deliberately excluded — it is real, but it says nothing about attack
 paths and would dominate the picture. Establish the shape before making
 any argument about it.
 
@@ -903,6 +904,12 @@ only show tools that have a gate, so absence there would read as safety.
 `Denied` edge — policy refusing the call — and an `Approved` edge scoped
 `session`, two events later. The control worked, and then one keypress
 switched it off for the rest of the run.
+
+**7. One principal, many agents.** The answer to what 6 just showed. The
+gate failed because it could only ask *who is asking*; with the
+principal carried end-to-end it asks *on whose authority*. Re-run with
+`--scope read:corpus` and the write is refused before any human is
+prompted — nobody is asked to approve what nobody authorized.
 
 Then go back to the terminal for the part the graph cannot show:
 

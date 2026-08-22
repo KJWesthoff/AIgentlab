@@ -43,16 +43,22 @@ class SavedQuery:
         return f"{PREFIX}: {self.name}"
 
 
-#: The subgraph worth looking at. Excludes the model/profile/provider
-#: plumbing, which is real but says nothing about attack paths, and would
-#: otherwise dominate the picture.
-SECURITY_EDGES = "CanInject|CanCoerce|AllowedToCall|Produces|FlowsTo|GuardedBy"
+#: The subgraph worth looking at: the whole boundary model in one
+#: picture — who acts for whom, what content can reach where, what may be
+#: called, and what stands in the way. Excludes the model/profile/provider
+#: plumbing, which is real but says nothing about attack paths and would
+#: otherwise dominate the view.
+SECURITY_EDGES = (
+    "CanInject|CanCoerce|AllowedToCall|Produces|FlowsTo|GuardedBy"
+    "|ActsFor|HoldsScope|RequiresScope"
+)
 
 QUERIES: tuple[SavedQuery, ...] = (
     SavedQuery(
         "Overview — the security-relevant graph",
-        "Start here. Agents, tools, documents and artifacts with the edges "
-        "that matter, leaving out model/provider plumbing.",
+        "Start here. The principal, agents, tools, documents, artifacts "
+        "and the approval gate — every boundary in one picture, leaving "
+        "out model/provider plumbing.",
         f"MATCH p = (:AgentLab)-[:{SECURITY_EDGES}]->(:AgentLab) RETURN p",
     ),
     SavedQuery(
@@ -223,6 +229,7 @@ DEMO_ORDER: tuple[str, ...] = (
     "Shortest path from a document to any tool",
     "Write-capable tools and what guards them",
     "Approval gates that stopped asking",
+    "One principal, many agents",
 )
 
 

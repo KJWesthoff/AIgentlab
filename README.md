@@ -133,8 +133,10 @@ layer:
 │                          (+ max 1 revision, plain Python)       │
 ├─────────────────────────────────────────────────────────────────┤
 │  agents/runtime          bounded tool loop per agent            │
-│    ├─ orchestration/policy   allowlist check per tool call      │
-│    └─ orchestration/state    budget check before every call     │
+│    ├─ orchestration/policy      allowlist · scope · approval    │
+│    ├─ orchestration/principal   who the run acts for            │
+│    ├─ orchestration/approval    human gate on write tools       │
+│    └─ orchestration/state       budget check before every call  │
 │                                                                 │
 │  agents/definitions ◄─── config/agents.yaml                     │
 │    AgentSpec = role + prompt + profile + tools + max_calls      │
@@ -152,7 +154,6 @@ layer:
 │  tools/registry          search_documents (keyword variant)     │
 │  tools/vector_search     search_documents (semantic, default)   │
 │  tools/write_report      save_report — the one tool that writes │
-│  orchestration/approval  human gate in front of write tools     │
 ├─────────────────────────────────────────────────────────────────┤
 │  observability/trace     opt-in JSONL run trace: context        │
 │                          windows, policy/budget decisions       │
@@ -164,7 +165,8 @@ layer:
 │  graph/export            BloodHound OpenGraph JSON              │
 │  graph/icons             custom node-kind icons for the UI      │
 │  graph/queries           saved Cypher queries (the demo set)    │
-│  graph/bloodhound        signed API client (bhesignature HMAC)   │
+│  graph/bloodhound        signed API client (bhesignature HMAC)  │
+│  graph/ingest            upload · replace · wait for the job    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -194,9 +196,10 @@ layer:
 | Module | Responsibility |
 |---|---|
 | `workflow.py` | `Workflow.execute(objective)` — the deterministic pipeline: researcher → analyst → writer → reviewer, then at most `MAX_REVISIONS = 1` rewrite if the reviewer rejects. Returns a `WorkflowResult` bundling the final answer, all intermediate artifacts, the approval status and the budget totals. The routing is ordinary Python — no tokens are spent asking a supervisor what to do next. |
-| `policy.py` | `authorize_tool_call(agent, tool_name, tool)` — the policy enforcement point. Denies tools missing from the agent's allowlist, denies tools that don't exist, and denies write-capable tools with `requires_approval=True` (the hook for a future human-approval gate). A model output is **never** authorization. |
+| `policy.py` | `authorize_tool_call(agent, tool_name, tool, principal)` — the policy enforcement point, in this order: the tool must be in the agent's allowlist, it must exist, the **principal must hold its `required_scope`**, and a write-capable tool must then be approved by a human. Authority is checked *before* approval, so nobody is ever asked to approve a call no one was authorized to request. A model output is **never** authorization. |
+| `principal.py` | `Principal` — the human a run acts for, and the scopes they carry. Loaded from `config/principal.yaml`; `local-user` resolves to the real account. Passed through `TaskState` as a parameter and never into a context window, because an identity the model can read is one it can be steered into rewriting. |
 | `approval.py` | `Approver` — how a human answers the gate `policy.py` opens. `DenyingApprover` is the default and fails closed, so an unattended run never gains write access. `ConsoleApprover` prompts on the terminal with `[y] once / [a] rest of the run / [N] deny`. The session grant is the fatigue vector, modeled deliberately: taking it turns a per-call control into a per-session one, later calls execute unattended, and the trace still says "approved". Scope is recorded distinctly so `graph/analysis.py` can report it. |
-| `state.py` | `ExecutionBudget` (caps: model calls, tool calls, input/output tokens, USD) and `BudgetTracker` (`before_model_call()` / `before_tool_call()` raise `BudgetExceeded`; `record_*()` accumulate actuals from each response's `Usage`). Also `TaskState` — the per-run audit log: every model call, tool call and policy denial is appended to `history`. |
+| `state.py` | `ExecutionBudget` (caps: model calls, tool calls, input/output tokens, USD) and `BudgetTracker` (`before_model_call()` / `before_tool_call()` raise `BudgetExceeded`; `record_*()` accumulate actuals from each response's `Usage`). Also `TaskState` — the per-run audit log (every model call, tool call, policy denial and approval decision is appended to `history`), and the carrier for the run's `Principal`. |
 
 ### `src/agentlab/tools/` — what agents may touch
 
@@ -236,7 +239,7 @@ layer:
 |---|---|
 | `src/agentlab/main.py` | Wires everything together: loads both YAML configs, builds the `OpenRouterProvider` (requires `OPENROUTER_API_KEY`), picks the search tool per `--search-mode` (vector by default, keyword fallback) over `--corpus-dir`, constructs service → tracker → runtime → workflow, executes, prints the result and the budget spend. `--live` starts the localhost trace viewer (and keeps it up after the run until Ctrl+C); `--trace-file` writes the JSONL trace without a server. |
 | `config/models.yaml` | Logical model profiles → OpenRouter slugs, declared capabilities, per-call cost limits. **The only place vendor slugs exist.** |
-| `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call and output-token budgets. The researcher gets `max_output_tokens: 12000` because evidence carries verbatim excerpts and grows with the corpus — truncating it fails JSON validation and surfaces as "no evidence", indistinguishable from a corpus that genuinely lacks the topic. The others keep the 4000 default, which is what stops a writer running away to its model's 65k ceiling. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
+| `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call and output-token budgets. The researcher gets `max_output_tokens: 12000` because evidence carries verbatim excerpts and grows with the corpus — truncating it fails JSON validation and surfaces as "no evidence", indistinguishable from a corpus that genuinely lacks the topic. The others keep the 4000 default, which is what stops a writer running away to its model's 65k ceiling. The writer holds `save_report` — which is what makes the critical attack path real rather than hypothetical — and runs on the `researcher` profile because `economical` does not declare `tool_calling`. It is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
 | `tests/` | 148 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
@@ -554,38 +557,46 @@ critical severity, because `policy.py` should have made it impossible.
 ### What it finds in the shipped config
 
 ```
-3 findings — 3 medium
+7 findings — 2 high, 5 medium
 
- ~ [indirect-injection-reach] 'analyst' is injection-reachable but reads no documents
-     path: prompt-injection.md -[CanInject]-> researcher -[CanCoerce]-> analyst
+ ! [untrusted-to-write-tool] Untrusted content can reach write-capable tool 'save_report'
+     boundary: permission gate — 2 Excessive Agency & Tool Abuse · LLM01, LLM06, T2
+     path: prompt-injection.md -[CanInject]-> researcher -[CanCoerce]-> writer
+           -[AllowedToCall]-> save_report
+
+ ! [indirect-injection-reach] 'writer' is injection-reachable but reads no documents
+     boundary: ingress boundary — 1 Prompt Injection · LLM01, T12, T5
 ```
 
-Only the researcher ever touches the corpus. Its allowlist is one
-read-only tool. Reviewed agent by agent, nothing is wrong — and yet
-untrusted document content reaches all four agents, because artifacts
-carry it downstream. `runtime.py` labels tool results with
-`UNTRUSTED_PREFIX`, but artifacts pass between stages unlabeled, so the
-taint crosses the boundary without a marker. That is exactly the class of
-finding per-object review misses and a graph makes obvious.
+Nobody granted that path. The researcher reads the corpus, the writer
+holds the tool, and the artifact between them carries the taint across —
+each permission defensible on its own, the composition not. It is `high`
+rather than `critical` because the human approval gate sits on the path;
+remove the gate and the same finding is critical.
 
-The shipped configuration has no high or critical findings, and a test
-asserts it stays that way. To watch a dangerous composition appear, grant
-the writer the search tool:
+The writer is also flagged for a subtler reason: it never calls a corpus
+tool, so its allowlist looks clean, but untrusted document content still
+arrives in its context through upstream artifacts. `runtime.py` labels
+tool results with `UNTRUSTED_PREFIX`; artifacts cross between stages
+unlabeled. That asymmetry is the graph pointing at a real gap in this
+lab's own security model.
+
+The remaining five are `confused-deputy` (three agents that can steer a
+tool they were never granted) and two more `indirect-injection-reach`.
+A test pins this exact set, so a config change that adds or removes a
+finding fails the suite rather than surprising you during a demo.
+
+To watch the picture change from one line, take the tool away:
 
 ```yaml
 # config/agents.yaml
   writer:
-    allowed_tools: [search_documents]   # one line
+    allowed_tools: []          # was [save_report]
 ```
 
-```
- ~ [confused-deputy] 'analyst' can influence 'writer', which holds search_documents
-     path: analyst -[Produces]-> AnalysisResult -[FlowsTo]-> writer
-```
-
-The analyst was never granted that tool. It doesn't need to be: its
-output steers an agent that has it. Structurally this is a user who is
-not a Domain Admin but sits in a group nested inside one.
+Both high findings disappear and the confused-deputy findings go with
+them — there is no longer a tool to be steered. That is the fix the
+graph is arguing for, and it costs the writer its ability to save.
 
 ### The principal
 
@@ -827,7 +838,7 @@ has an icon, so a new kind can't ship anonymous.
 > Explore and the search bar are scoped to the built-in AD/Azure kinds, so
 > a successful ingest looks like an empty database. Everything is there —
 > reach it from **Explore → Cypher**, starting with
-> `MATCH (n:AgentLab) RETURN n` (29 nodes for the shipped config). That is
+> `MATCH (n:AgentLab) RETURN n` (32 nodes for the shipped config). That is
 > what the `AgentLab` kind on every node is for.
 
 > **Gotcha:** do not set `objectid` on an OpenGraph node. It is reserved

@@ -145,6 +145,8 @@ layer:
 │  llm/registry       ◄─── config/models.yaml                     │
 │  llm/interface           LLMProvider ABC (the only import       │
 │                          higher layers are allowed to use)      │
+│  llm/types               the internal vocabulary every layer    │
+│                          above the adapters speaks              │
 ├─────────────────────────────────────────────────────────────────┤
 │  llm/openrouter          the ONLY file that knows OpenRouter's  │
 │                          wire format, auth and error semantics  │
@@ -167,6 +169,7 @@ layer:
 │  graph/queries           saved Cypher queries (the demo set)    │
 │  graph/bloodhound        signed API client (bhesignature HMAC)  │
 │  graph/ingest            upload · replace · wait for the job    │
+│  graph/cli               agentlab-graph entry point             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -231,18 +234,18 @@ layer:
 | `queries.py` | The saved Cypher query set — twenty queries mirroring the checks in `analysis.py`, the demo seven numbered so they sort first, prefixed `agentlab:` and ordered as a demo runs. `write_queries()` emits a ZIP in BloodHound's own import format (one JSON per query); `register_queries()` installs them over the API, updating by name rather than duplicating, and with `prune=True` deletes prefixed queries that are no longer in the set — the residue a rename leaves behind. |
 | `icons.py` | The custom node-kind icon pack for BloodHound's `/api/v2/custom-nodes` endpoint. Font Awesome free-solid names plus a palette that encodes trust: warm for attacker-influenceable content, gold for privilege, green for controls, cool for infrastructure. `register_icons()` POSTs it to a running instance, signing requests with `sign_request()` (BloodHound's chained-HMAC `bhesignature` scheme — bearer tokens are rejected) and reading `BLOODHOUND_TOKEN_ID` / `BLOODHOUND_TOKEN_KEY` from the environment, so no credential lands in the repo. |
 | `ingest.py` | `ingest_graph()` — uploads a payload over the API. File ingest is three calls (start job → upload → **end** job); ending it is what triggers processing, so a client that skips it leaves data in an open job and an empty graph. Then polls until the job leaves its running states, reporting the real outcome rather than assuming success. |
-| `cli.py` | `agentlab-graph` — builds, analyzes, exports. `--trace-file` overlays a run, `--export` writes the OpenGraph file, `--ingest` builds and uploads it in one command, `--export-icons` / `--register-icons` handle the icon pack, `--cypher` prints starter queries, `--json` emits machine-readable findings, `--fail-on` turns it into a CI gate. |
+| `cli.py` | `agentlab-graph` — builds, analyzes, exports. Reads the same `--config-dir` as the runtime, so the graph describes the configuration a run would actually use. `--trace-file` overlays a run, `--export` writes the OpenGraph file, `--ingest` builds and uploads it in one command, `--export-icons` / `--register-icons` handle the icon pack, `--cypher` prints starter queries, `--json` emits machine-readable findings, `--fail-on` turns it into a CI gate. |
 
 ### Entry point and configuration
 
 | File | Responsibility |
 |---|---|
-| `src/agentlab/main.py` | Wires everything together: loads both YAML configs, builds the `OpenRouterProvider` (requires `OPENROUTER_API_KEY`), picks the search tool per `--search-mode` (vector by default, keyword fallback) over `--corpus-dir`, constructs service → tracker → runtime → workflow, executes, prints the result and the budget spend. `--live` starts the localhost trace viewer (and keeps it up after the run until Ctrl+C); `--trace-file` writes the JSONL trace without a server. |
+| `src/agentlab/main.py` | Wires everything together: loads the YAML configs from `--config-dir` (`models.yaml`, `agents.yaml`, `principal.yaml`), builds the `OpenRouterProvider` (requires `OPENROUTER_API_KEY`), picks the search tool per `--search-mode` (vector by default, keyword fallback) over `--corpus-dir`, constructs service → tracker → runtime → workflow, executes, prints the result and the budget spend. `--live` starts the localhost trace viewer (and keeps it up after the run until Ctrl+C); `--trace-file` writes the JSONL trace without a server. |
 | `config/models.yaml` | Logical model profiles → OpenRouter slugs, declared capabilities, per-call cost limits. **The only place vendor slugs exist.** |
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call and output-token budgets. The researcher gets `max_output_tokens: 12000` because evidence carries verbatim excerpts and grows with the corpus — truncating it fails JSON validation and surfaces as "no evidence", indistinguishable from a corpus that genuinely lacks the topic. The others keep the 4000 default, which is what stops a writer running away to its model's 65k ceiling. The writer holds `save_report` — which is what makes the critical attack path real rather than hypothetical — and runs on the `researcher` profile because `economical` does not declare `tool_calling`. It is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 148 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 158 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). A separate `tests/test_readme.py` checks this file's own numbers against the code — test count, query count, demo length, every module and CLI flag documented, and the quoted findings — because documentation drifts silently and these claims have a single source of truth. Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -885,7 +888,9 @@ of two runs.
 
 ### The run order
 
-In **Explore → Cypher**, from the saved queries prefixed `agentlab:`.
+Seven queries, each building on the last, numbered `agentlab: 1.` to
+`agentlab: 7.` so they sit at the top of **Explore → Cypher** in this
+order.
 
 **1. Overview — the security-relevant graph.** ~19 nodes: the principal
 and its scopes, agents, tools, documents, artifacts, and the approval
@@ -904,7 +909,7 @@ reviewer are not allowed `save_report`. They do not need to be: their
 output enters the writer's context, and the writer holds it. Structurally
 a user who is not a Domain Admin but sits in a group nested inside one.
 
-**4. Shortest path from a document to a write-capable tool.** The whole
+**4. Shortest path from a document to any tool.** The whole
 chain in one picture — `Document` → `researcher` → `writer` → `Tool`,
 warm to gold. This system's "shortest path to Domain Admins".
 

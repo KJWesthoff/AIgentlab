@@ -1213,7 +1213,7 @@ def test_pruning_removes_only_our_stale_queries(monkeypatch):
     deletion candidate, however stale it looks.
     """
     installed = [
-        {"id": 1, "name": f"{PREFIX}: {QUERIES[0].name}"},   # current
+        {"id": 1, "name": QUERIES[0].full_name},               # current
         {"id": 2, "name": f"{PREFIX}: An old renamed query"},  # stale, ours
         {"id": 3, "name": "Someone else's query"},             # never ours
     ]
@@ -1293,3 +1293,42 @@ def test_owasp_entries_are_well_formed():
         assert owasp, check
         for entry in owasp:
             assert re.fullmatch(r"(LLM\d{2}|T\d{1,2})", entry), (check, entry)
+
+
+def test_demo_queries_sort_ahead_of_the_supporting_ones():
+    """BloodHound's sidebar is alphabetical, and digits sort before letters.
+
+    Without the numbering the seven queries that matter are scattered
+    through thirteen that do not, and the demo order is invisible.
+    """
+    demo = sorted(q.full_name for q in QUERIES if q.is_demo)
+    rest = sorted(q.full_name for q in QUERIES if not q.is_demo)
+
+    assert len(demo) == len(DEMO_ORDER)
+    assert all(name < rest[0] for name in demo)
+    # Numbered in the order the demo walks through them.
+    for index, name in enumerate(DEMO_ORDER, start=1):
+        assert f"{PREFIX}: {index}. {name}" in demo
+
+
+def test_demo_only_installs_just_the_sequence(monkeypatch):
+    calls = fake_bloodhound(monkeypatch)
+    result = register_queries("http://127.0.0.1:8080", demo_only=True)
+
+    assert len(result.created) == len(DEMO_ORDER)
+    assert len([c for c in calls if c["method"] == "POST"]) == len(DEMO_ORDER)
+
+
+def test_demo_only_with_prune_removes_the_supporting_queries(monkeypatch):
+    """The minimal sidebar: exactly the seven, nothing else of ours."""
+    installed = [
+        {"id": i, "name": q.full_name} for i, q in enumerate(QUERIES, start=1)
+    ]
+    fake_bloodhound(monkeypatch, saved_queries=installed)
+    result = register_queries(
+        "http://127.0.0.1:8080", prune=True, demo_only=True
+    )
+
+    assert len(result.updated) == len(DEMO_ORDER)
+    assert len(result.removed) == len(QUERIES) - len(DEMO_ORDER)
+    assert all(not name.startswith(f"{PREFIX}: 1.") for name in result.removed)

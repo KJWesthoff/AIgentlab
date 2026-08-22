@@ -235,6 +235,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--demo-only",
+        action="store_true",
+        help=(
+            "With --register-queries, install only the numbered demo "
+            "sequence. Combine with --prune-queries to remove the "
+            "supporting queries from the sidebar."
+        ),
+    )
+    parser.add_argument(
         "--prune-queries",
         action="store_true",
         help=(
@@ -314,12 +323,14 @@ def main() -> None:
     if args.register_queries:
         load_dotenv(PROJECT_ROOT / ".env")
         result = register_queries(
-            args.register_queries, prune=args.prune_queries
+            args.register_queries,
+            prune=args.prune_queries,
+            demo_only=args.demo_only,
         )
         print(
             f"Saved queries at {args.register_queries}: "
             f"{len(result.created)} created, {len(result.updated)} updated "
-            f"({len(QUERIES)} total). Find them under Explore → Cypher."
+            f"({len(QUERIES)} available). Find them under Explore → Cypher."
         )
         for name in result.removed:
             print(f"  removed stale query: {name}")

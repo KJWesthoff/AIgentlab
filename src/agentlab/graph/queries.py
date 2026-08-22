@@ -40,7 +40,32 @@ class SavedQuery:
 
     @property
     def full_name(self) -> str:
+        """Name as it appears in BloodHound's sidebar.
+
+        Demo queries are numbered so they sort ahead of the supporting
+        ones and in the order the talk walks through them — the sidebar
+        is alphabetical, and digits sort before letters.
+        """
+        if self.name in DEMO_ORDER:
+            return f"{PREFIX}: {DEMO_ORDER.index(self.name) + 1}. {self.name}"
         return f"{PREFIX}: {self.name}"
+
+    @property
+    def is_demo(self) -> bool:
+        return self.name in DEMO_ORDER
+
+
+#: The order the README's demo section walks through. Named here so a
+#: renamed query breaks a test rather than the presentation.
+DEMO_ORDER: tuple[str, ...] = (
+    "Overview — the security-relevant graph",
+    "Which agents can untrusted documents reach?",
+    "Confused deputies: who can steer whose tools",
+    "Shortest path from a document to any tool",
+    "Write-capable tools and what guards them",
+    "Approval gates that stopped asking",
+    "One principal, many agents",
+)
 
 
 #: The subgraph worth looking at: the whole boundary model in one
@@ -220,19 +245,6 @@ QUERIES: tuple[SavedQuery, ...] = (
 )
 
 
-#: The order the README's demo section walks through. Named here so a
-#: renamed query breaks a test rather than the presentation.
-DEMO_ORDER: tuple[str, ...] = (
-    "Overview — the security-relevant graph",
-    "Which agents can untrusted documents reach?",
-    "Confused deputies: who can steer whose tools",
-    "Shortest path from a document to any tool",
-    "Write-capable tools and what guards them",
-    "Approval gates that stopped asking",
-    "One principal, many agents",
-)
-
-
 @dataclass(frozen=True)
 class QueryRegistration:
     created: tuple[str, ...]
@@ -268,6 +280,7 @@ def register_queries(
     base_url: str,
     client: BloodHoundClient | None = None,
     prune: bool = False,
+    demo_only: bool = False,
 ) -> QueryRegistration:
     """Create or refresh every saved query on a running BloodHound.
 
@@ -293,7 +306,9 @@ def register_queries(
     created: list[str] = []
     updated: list[str] = []
 
-    for saved in QUERIES:
+    selected = [q for q in QUERIES if q.is_demo] if demo_only else QUERIES
+
+    for saved in selected:
         payload = {
             "name": saved.full_name,
             "query": saved.query,
@@ -311,7 +326,7 @@ def register_queries(
 
     removed: list[str] = []
     if prune:
-        wanted = {saved.full_name for saved in QUERIES}
+        wanted = {saved.full_name for saved in selected}
         for name, identifier in existing.items():
             if not str(name).startswith(f"{PREFIX}:") or name in wanted:
                 continue

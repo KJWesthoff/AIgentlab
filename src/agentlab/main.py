@@ -22,6 +22,7 @@ from .llm.registry import ModelRegistry
 from .llm.service import LLMService
 from .observability.trace import Tracer, TraceWriter
 from .orchestration.approval import Approver, ConsoleApprover
+from .orchestration.principal import load_principal
 from .orchestration.state import BudgetTracker, ExecutionBudget
 from .orchestration.workflow import Workflow
 from .tools.registry import build_default_tools
@@ -41,6 +42,7 @@ async def run(
     search_mode: str,
     tracer: Tracer | None = None,
     approver: Approver | None = None,
+    scopes: list[str] | None = None,
 ) -> None:
     registry = ModelRegistry.from_yaml(config_dir / "models.yaml")
     agents = load_agents(config_dir / "agents.yaml")
@@ -74,6 +76,9 @@ async def run(
         model_registry=registry,
         providers={"openrouter": provider},
     )
+    principal = load_principal(config_dir / "principal.yaml", scopes)
+    print(f"Principal:  {principal.describe()}")
+
     tracker = BudgetTracker(budget=ExecutionBudget())
     runtime = AgentRuntime(
         service=service,
@@ -83,7 +88,11 @@ async def run(
         approver=approver,
     )
     workflow = Workflow(
-        runtime=runtime, agents=agents, tracker=tracker, tracer=tracer
+        runtime=runtime,
+        agents=agents,
+        tracker=tracker,
+        tracer=tracer,
+        principal=principal,
     )
 
     try:
@@ -149,6 +158,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--scope",
+        action="append",
+        dest="scopes",
+        default=None,
+        help=(
+            "Override the principal's scopes for this run (repeatable). "
+            "Narrowing them shows the difference between approving a call "
+            "and being authorized to make it."
+        ),
+    )
+    parser.add_argument(
         "--live",
         action="store_true",
         help=(
@@ -201,6 +221,7 @@ def main() -> None:
                 args.search_mode,
                 tracer=tracer,
                 approver=approver,
+                scopes=args.scopes,
             )
         )
         if server is not None:

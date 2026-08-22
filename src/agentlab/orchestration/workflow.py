@@ -21,6 +21,7 @@ from ..agents.definitions import (
 )
 from ..agents.runtime import AgentRuntime
 from ..observability.trace import Tracer, budget_snapshot, truncate
+from .principal import Principal
 from .state import BudgetTracker, TaskState
 
 MAX_REVISIONS = 1
@@ -51,18 +52,30 @@ class Workflow:
         agents: dict[str, AgentSpec],
         tracker: BudgetTracker,
         tracer: Tracer | None = None,
+        principal: Principal | None = None,
     ) -> None:
         self._runtime = runtime
         self._agents = agents
         self._tracker = tracker
         self._tracer = tracer or Tracer()
+        self._principal = principal
 
     async def execute(self, objective: str) -> WorkflowResult:
-        state = TaskState(task_id=str(uuid4()), objective=objective)
+        # One principal for the whole run: every stage acts for the same
+        # identity, so a later stage cannot reach further than the person
+        # who started it.
+        state = TaskState(
+            task_id=str(uuid4()),
+            objective=objective,
+            principal=self._principal,
+        )
         self._tracer.emit(
             "run_started",
             task_id=state.task_id,
             objective=objective,
+            principal=(
+                self._principal.describe() if self._principal else None
+            ),
             agents=[
                 {
                     "name": spec.name,

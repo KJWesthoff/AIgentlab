@@ -1,0 +1,19 @@
+# The human on whose authority a run executes. One principal, many
+# agents: every stage acts for this identity, and the permission gate
+# checks these scopes — not which agent happened to ask.
+#
+# The principal is carried as a parameter through the workflow and never
+# written into a context window, because an identity the model can read
+# is an identity it can be steered into rewriting.
+
+principal:
+  # "local-user" resolves to the account actually running this, so the
+  # trace names a real identity rather than an invented one.
+  name: local-user
+
+  # Tools declare the scope they need (see ToolDefinition.required_scope).
+  # Drop one here — or pass --scope on the command line — and every tool
+  # needing it is refused for lack of authority, regardless of approval.
+  scopes:
+    - read:corpus
+    - write:reports

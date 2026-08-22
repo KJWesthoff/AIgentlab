@@ -1276,12 +1276,16 @@ def test_correlation_only_names_real_root_causes():
 def test_coverage_reports_the_gaps_honestly():
     """agentlab models no principal and no egress; say so, don't hide it."""
     gaps = {name for name, _, checks in coverage() if not checks}
-    assert "6 Identity & Trust Failures" in gaps
+    # No egress, no memory, no third-party supply chain — still true.
     assert "3 Sensitive-Data Disclosure" in gaps
-    # And the ones it does cover are genuinely covered.
+    assert "4 Data / Model / Memory Poisoning" in gaps
+    assert "5 Supply-Chain Compromise" in gaps
+
     covered = {name for name, _, checks in coverage() if checks}
     assert "1 Prompt Injection" in covered
     assert "8 Oversight & Alert Fatigue" in covered
+    # Closed by adding a principal and propagating it across hand-offs.
+    assert "6 Identity & Trust Failures" in covered
 
 
 def test_owasp_entries_are_well_formed():

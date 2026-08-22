@@ -25,6 +25,7 @@ from pathlib import Path
 
 from ..agents.definitions import AgentSpec, load_agents
 from ..llm.registry import ModelRegistry
+from ..orchestration.principal import load_principal
 from ..tools.definitions import Tool
 from ..tools.registry import build_default_tools
 from ..tools.write_report import build_write_tools
@@ -95,6 +96,7 @@ def collect_static(
     if tools is None:
         tools = {**build_default_tools(corpus_dir), **build_write_tools()}
 
+    _add_principal(graph, config_dir)
     _add_models(graph, registry)
     _add_tools(graph, tools)
     _add_corpus(graph, corpus_dir, max_documents)
@@ -103,6 +105,33 @@ def collect_static(
     _derive_taint(graph, agents, tools)
 
     return graph
+
+
+def _add_principal(graph: Graph, config_dir: Path) -> None:
+    """The human every agent acts for, and the authority they carry.
+
+    One principal, many agents: authorization derives from this identity
+    rather than from whichever agent is asking, so the graph can show
+    that a delegation chain never reaches further than the person who
+    started it.
+    """
+    path = config_dir / "principal.yaml"
+    if not path.is_file():
+        return
+
+    principal = load_principal(path)
+    principal_id = node_id(NodeKind.PRINCIPAL, principal.name)
+    graph.add_node(
+        principal_id,
+        NodeKind.PRINCIPAL,
+        principal.name,
+        scopes=sorted(principal.scopes),
+    )
+
+    for scope in sorted(principal.scopes):
+        scope_id = node_id(NodeKind.SCOPE, scope)
+        graph.add_node(scope_id, NodeKind.SCOPE, scope)
+        graph.add_edge(principal_id, scope_id, EdgeKind.HOLDS_SCOPE)
 
 
 def _add_models(graph: Graph, registry: ModelRegistry) -> None:
@@ -156,6 +185,13 @@ def _add_tools(graph: Graph, tools: dict[str, Tool]) -> None:
                 description="Write-capable tools require human approval.",
             )
             graph.add_edge(tool_id, gate_id, EdgeKind.GUARDED_BY)
+
+        if definition.required_scope:
+            scope_id = node_id(NodeKind.SCOPE, definition.required_scope)
+            graph.add_node(
+                scope_id, NodeKind.SCOPE, definition.required_scope
+            )
+            graph.add_edge(tool_id, scope_id, EdgeKind.REQUIRES_SCOPE)
 
         for source in definition.reads:
             source_id = node_id(NodeKind.CORPUS, source)
@@ -214,6 +250,11 @@ def _add_agents(
 
         profile_id = node_id(NodeKind.MODEL_PROFILE, spec.model_profile)
         graph.add_edge(agent_id, profile_id, EdgeKind.RUNS_ON)
+
+        # Every agent acts for the one principal — the edge that makes a
+        # delegation chain traceable back to a human.
+        for principal in graph.of_kind(NodeKind.PRINCIPAL):
+            graph.add_edge(agent_id, principal.id, EdgeKind.ACTS_FOR)
 
         for capability in sorted(spec.required_capabilities):
             capability_id = node_id(NodeKind.CAPABILITY, capability)

@@ -169,6 +169,7 @@ def build_vector_tools(
                 risk="low",
                 read_only=True,
                 reads=["corpus"],
+                required_scope="read:corpus",
             ),
             SearchDocumentsInput,
             search_documents,

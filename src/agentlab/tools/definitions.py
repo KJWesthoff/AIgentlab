@@ -28,6 +28,11 @@ class ToolDefinition(BaseModel):
     reads: list[str] = Field(default_factory=list)
     writes: list[str] = Field(default_factory=list)
 
+    # The principal scope this tool needs. None means the tool executes on
+    # nobody's authority — legal, but the permission graph reports it,
+    # because an unscoped tool cannot be refused on identity grounds.
+    required_scope: str | None = None
+
 
 class Tool:
     def __init__(

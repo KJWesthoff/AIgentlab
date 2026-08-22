@@ -99,6 +99,7 @@ def build_write_tools(report_dir: Path = DEFAULT_REPORT_DIR) -> dict[str, Tool]:
                 risk="high",
                 read_only=False,
                 writes=["reports"],
+                required_scope="write:reports",
             ),
             SaveReportInput,
             make_save_report(report_dir),

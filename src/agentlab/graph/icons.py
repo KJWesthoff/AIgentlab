@@ -10,6 +10,8 @@ The palette carries meaning rather than decoration:
   become attacker-influenced
 - **gold** (tools) — privilege, the thing a path is trying to reach
 - **green** (the approval gate) — a control standing in the way
+- **violet** (the principal and its scopes) — authority: whose say-so a
+  call rests on
 - **cool** (agents, profiles, models, providers) — infrastructure
 
 so a rendered path reads red → warm → gold, and any green on it is a
@@ -48,6 +50,9 @@ ICONS: dict[NodeKind, Icon] = {
     NodeKind.TOOL: Icon("wrench", "#C9A227"),
     # A control standing on the path.
     NodeKind.APPROVAL_GATE: Icon("user-shield", "#2E9E5B"),
+    # Authority: the human a run acts for, and what they actually granted.
+    NodeKind.PRINCIPAL: Icon("fingerprint", "#6E4FD1"),
+    NodeKind.SCOPE: Icon("id-card", "#8B78DE"),
     # Infrastructure.
     NodeKind.AGENT: Icon("robot", "#4A90D9"),
     NodeKind.MODEL_PROFILE: Icon("layer-group", "#7B68A6"),

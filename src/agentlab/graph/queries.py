@@ -152,6 +152,30 @@ QUERIES: tuple[SavedQuery, ...] = (
     ),
     # --- Hygiene ---
     SavedQuery(
+        "One principal, many agents",
+        "Authorization derives from the human who started the run, carried "
+        "end-to-end. Every agent acting for one identity is what stops a "
+        "delegation reaching further than the person who began it.",
+        "MATCH p = (:Agent)-[:ActsFor]->(:Principal)-[:HoldsScope]->(:Scope) "
+        "RETURN p",
+    ),
+    SavedQuery(
+        "On whose authority — scope behind every tool",
+        "The gate asks not who is calling but on whose authority. A tool "
+        "whose scope the principal does not hold is refused before anyone "
+        "is asked to approve it.",
+        "MATCH p = (:Tool)-[:RequiresScope]->(:Scope)<-[:HoldsScope]-"
+        "(:Principal) RETURN p",
+    ),
+    SavedQuery(
+        "Tools the principal cannot authorize",
+        "Allowlist entries that promise more than the principal's scopes "
+        "permit — refused at the gate today, live the moment someone "
+        "widens the scopes. Empty is the correct result.",
+        "MATCH (t:Tool)-[:RequiresScope]->(s:Scope) "
+        "WHERE NOT (:Principal)-[:HoldsScope]->(s) RETURN t, s",
+    ),
+    SavedQuery(
         "Tools nobody may call",
         "Registered and loadable, granted to no one — one allowlist edit "
         "from being live.",

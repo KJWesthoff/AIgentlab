@@ -40,6 +40,8 @@ class NodeKind(str, Enum):
     DOCUMENT = "Document"
     ARTIFACT = "Artifact"
     APPROVAL_GATE = "ApprovalGate"
+    PRINCIPAL = "Principal"
+    SCOPE = "Scope"
 
 
 class EdgeKind(str, Enum):
@@ -54,6 +56,9 @@ class EdgeKind(str, Enum):
     WRITES = "Writes"
     CONTAINS = "Contains"
     GUARDED_BY = "GuardedBy"
+    ACTS_FOR = "ActsFor"
+    HOLDS_SCOPE = "HoldsScope"
+    REQUIRES_SCOPE = "RequiresScope"
 
     # --- Flow layer (influence → principal) ---
     CAN_INJECT = "CanInject"

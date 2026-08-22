@@ -11,6 +11,7 @@ from agentlab.agents.runtime import AgentRuntime
 from agentlab.llm.registry import ModelProfile, ModelRegistry
 from agentlab.llm.types import ToolCall
 from agentlab.orchestration.state import BudgetTracker, ExecutionBudget
+from agentlab.orchestration.principal import Principal
 from agentlab.orchestration.workflow import Workflow
 from agentlab.tools.registry import build_default_tools
 
@@ -70,6 +71,14 @@ def make_registry() -> ModelRegistry:
     )
 
 
+#: A principal holding every scope the bundled tools need, so these tests
+#: exercise orchestration rather than the authority check (which
+#: test_principal.py covers directly).
+TEST_PRINCIPAL = Principal(
+    name="test-user", scopes=frozenset({"read:corpus", "write:reports"})
+)
+
+
 def build_workflow(provider: ScriptedProvider) -> Workflow:
     from agentlab.llm.service import LLMService
 
@@ -84,7 +93,12 @@ def build_workflow(provider: ScriptedProvider) -> Workflow:
         tracker=tracker,
     )
     agents = load_agents(PROJECT_ROOT / "config" / "agents.yaml")
-    return Workflow(runtime=runtime, agents=agents, tracker=tracker)
+    return Workflow(
+        runtime=runtime,
+        agents=agents,
+        tracker=tracker,
+        principal=TEST_PRINCIPAL,
+    )
 
 
 async def test_approved_first_pass_with_tool_call():

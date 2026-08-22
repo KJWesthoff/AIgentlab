@@ -219,6 +219,7 @@ def run_writer_proposing_a_save(tmp_path, approver_instance):
     from agentlab.llm.service import LLMService
     from agentlab.llm.types import ToolCall
     from agentlab.observability.trace import TraceWriter
+    from agentlab.orchestration.principal import Principal
     from agentlab.orchestration.state import BudgetTracker, TaskState
 
     agent = AgentSpec(
@@ -267,7 +268,13 @@ def run_writer_proposing_a_save(tmp_path, approver_instance):
         tracer=tracer,
         approver=approver_instance,
     )
-    state = TaskState(task_id="t", objective="save it")
+    state = TaskState(
+        task_id="t",
+        objective="save it",
+        principal=Principal(
+            name="test-user", scopes=frozenset({"write:reports"})
+        ),
+    )
     asyncio.run(
         runtime._tool_loop(agent, state, runtime._initial_messages(agent, "go"))
     )
@@ -324,6 +331,7 @@ def test_an_agent_with_tools_can_use_them_in_a_prose_stage(tmp_path):
     from agentlab.llm.registry import ModelProfile, ModelRegistry
     from agentlab.llm.service import LLMService
     from agentlab.llm.types import ToolCall
+    from agentlab.orchestration.principal import Principal
     from agentlab.orchestration.state import BudgetTracker, TaskState
 
     agent = AgentSpec(
@@ -370,7 +378,13 @@ def test_an_agent_with_tools_can_use_them_in_a_prose_stage(tmp_path):
     draft = asyncio.run(
         runtime.run_text(
             agent=agent,
-            state=TaskState(task_id="t", objective="o"),
+            state=TaskState(
+                task_id="t",
+                objective="o",
+                principal=Principal(
+                    name="test-user", scopes=frozenset({"write:reports"})
+                ),
+            ),
             task_input="write and save it",
         )
     )
@@ -389,6 +403,7 @@ def test_every_request_carries_the_agents_output_cap():
     from agentlab.agents.runtime import AgentRuntime
     from agentlab.llm.registry import ModelProfile, ModelRegistry
     from agentlab.llm.service import LLMService
+    from agentlab.orchestration.principal import Principal
     from agentlab.orchestration.state import BudgetTracker, TaskState
 
     agent = AgentSpec(

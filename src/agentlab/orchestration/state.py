@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..llm.types import GenerationResponse
+from .principal import Principal
 
 
 class BudgetExceeded(RuntimeError):
@@ -66,6 +67,10 @@ class BudgetTracker(BaseModel):
 class TaskState(BaseModel):
     task_id: str
     objective: str
+    # Carried with the delegation, never serialized into a context window:
+    # an identity the model can read is one it can be steered into
+    # rewriting.
+    principal: Principal | None = None
     artifacts: dict[str, Any] = Field(default_factory=dict)
     history: list[dict[str, Any]] = Field(default_factory=list)
     status: str = "running"

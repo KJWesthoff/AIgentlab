@@ -238,13 +238,18 @@ class AgentRuntime:
 
             for call in response.tool_calls:
                 tool = self._tools.get(call.name)
-                decision = authorize_tool_call(agent, call.name, tool)
+                decision = authorize_tool_call(
+                    agent, call.name, tool, state.principal
+                )
                 self._tracer.emit(
                     "policy_decision",
                     agent=agent.name,
                     tool=call.name,
                     allowed=decision.allowed,
                     reason=decision.reason,
+                    principal=(
+                        state.principal.name if state.principal else None
+                    ),
                 )
 
                 if not decision.allowed and decision.requires_approval:

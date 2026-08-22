@@ -135,6 +135,21 @@ CORRELATION: dict[str, tuple[Boundary, str, tuple[str, ...]]] = {
         "2 Excessive Agency & Tool Abuse",
         ("T3",),
     ),
+    "no-principal": (
+        Boundary.PRINCIPAL,
+        "6 Identity & Trust Failures",
+        ("T3", "T9", "T14"),
+    ),
+    "authority-exceeded": (
+        Boundary.PRINCIPAL,
+        "6 Identity & Trust Failures",
+        ("T3",),
+    ),
+    "unscoped-tool": (
+        Boundary.PRINCIPAL,
+        "6 Identity & Trust Failures",
+        ("T3", "T16"),
+    ),
     "capability-gap": (
         Boundary.PROVIDER_API,
         "9 Denial-of-Wallet / Resource",
@@ -209,6 +224,9 @@ def analyze(graph: Graph) -> Report:
         _capability_gaps,
         _tool_grant_without_tool_calling,
         _orphaned_tools,
+        _no_principal,
+        _authority_exceeded,
+        _unscoped_tool,
         _runtime_drift,
         _approval_fatigue,
         _observed_denials,
@@ -634,6 +652,126 @@ def _runtime_drift(graph: Graph, report: Report) -> None:
                     "then audit authorize_tool_call in orchestration/policy.py."
                 ),
                 nodes=(edge.source, edge.target),
+            )
+        )
+
+
+def _no_principal(graph: Graph, report: Report) -> None:
+    """No identity for the run to derive authority from.
+
+    Without a principal the gate can only ask *who is asking* — and a
+    trusted peer always answers that correctly. Authority has to come
+    from the human who started the run, carried end-to-end.
+    """
+    if graph.of_kind(NodeKind.PRINCIPAL):
+        return
+
+    report.add(
+        Finding(
+            check="no-principal",
+            severity=Severity.HIGH,
+            title="No principal: agents act on nobody's authority",
+            detail=(
+                "Nothing in the configuration names the human a run acts "
+                "for, so the permission gate can only check which agent "
+                "asked. Every delegation then becomes a place where "
+                "authority is assumed rather than carried."
+            ),
+            remediation=(
+                "Define config/principal.yaml and pass the principal "
+                "through the workflow, so the gate checks scopes rather "
+                "than the identity of the calling agent."
+            ),
+        )
+    )
+
+
+def _authority_exceeded(graph: Graph, report: Report) -> None:
+    """An allowlist promising more than the principal can authorize.
+
+    The grant looks live in config and fails at the gate. Worth knowing
+    before a run, and worth knowing that widening the principal's scopes
+    would silently activate it.
+    """
+    held = {
+        graph.label(edge.target)
+        for principal in graph.of_kind(NodeKind.PRINCIPAL)
+        for edge in graph.outgoing(
+            principal.id, frozenset({EdgeKind.HOLDS_SCOPE})
+        )
+    }
+    if not graph.of_kind(NodeKind.PRINCIPAL):
+        return
+
+    for tool in graph.of_kind(NodeKind.TOOL):
+        required = [
+            graph.label(edge.target)
+            for edge in graph.outgoing(
+                tool.id, frozenset({EdgeKind.REQUIRES_SCOPE})
+            )
+        ]
+        missing = [scope for scope in required if scope not in held]
+        if not missing:
+            continue
+
+        for edge in graph.incoming(
+            tool.id, frozenset({EdgeKind.ALLOWED_TO_CALL})
+        ):
+            report.add(
+                Finding(
+                    check="authority-exceeded",
+                    severity=Severity.MEDIUM,
+                    title=(
+                        f"{graph.label(edge.source)!r} is allowed "
+                        f"{tool.label!r}, which the principal cannot "
+                        "authorize"
+                    ),
+                    detail=(
+                        f"{tool.label!r} requires {missing}, which the "
+                        "principal does not hold. The call is refused at "
+                        "the gate today, and widening the principal's "
+                        "scopes activates the grant without touching the "
+                        "allowlist."
+                    ),
+                    remediation=(
+                        "Drop the tool from the allowlist, or grant the "
+                        "scope deliberately in config/principal.yaml."
+                    ),
+                    nodes=(edge.source, tool.id),
+                )
+            )
+
+
+def _unscoped_tool(graph: Graph, report: Report) -> None:
+    """A tool no scope governs — nothing to refuse it on.
+
+    Such a tool can never be denied on identity grounds, so the only
+    control left is the calling agent's allowlist.
+    """
+    if not graph.of_kind(NodeKind.PRINCIPAL):
+        return
+
+    for tool in graph.of_kind(NodeKind.TOOL):
+        if tool.properties.get("observed_only"):
+            continue
+        if graph.outgoing(tool.id, frozenset({EdgeKind.REQUIRES_SCOPE})):
+            continue
+
+        report.add(
+            Finding(
+                check="unscoped-tool",
+                severity=Severity.LOW,
+                title=f"Tool {tool.label!r} declares no required scope",
+                detail=(
+                    "The gate cannot refuse it on the principal's "
+                    "authority, so an allowlist entry is the only thing "
+                    "standing in front of it."
+                ),
+                remediation=(
+                    "Give the tool a required_scope so its use is tied to "
+                    "authority a human actually granted."
+                ),
+                nodes=(tool.id,),
             )
         )
 

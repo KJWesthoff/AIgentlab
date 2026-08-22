@@ -239,7 +239,7 @@ layer:
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call and output-token budgets. The researcher gets `max_output_tokens: 12000` because evidence carries verbatim excerpts and grows with the corpus — truncating it fails JSON validation and surfaces as "no evidence", indistinguishable from a corpus that genuinely lacks the topic. The others keep the 4000 default, which is what stops a writer running away to its model's 65k ceiling. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 132 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 145 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -503,6 +503,9 @@ the boundary it is evidence of:
 | "approval is a union, not a chain" | the `confused-deputy` check |
 | "real permission surface = the union of every reachable agent's tools" | the *Real permission surface* query |
 | 🛡 provider API boundary | `Model` → `ServedBy` → `Provider`, plus the run budgets |
+| "one principal, many agents" | `Principal` node, `ActsFor` from every agent |
+| "carried with every delegation, never in the context" | passed through `TaskState`; a test fails if it appears in a context window |
+| "on whose authority" | `Tool` → `RequiresScope` → `Scope` ← `HoldsScope` ← `Principal` |
 | "the permission gate runs again on every iteration" | `approval-fatigue` — what a session grant does to that |
 
 `agentlab-graph --coverage` maps the nine consolidated root causes onto
@@ -514,15 +517,9 @@ the checks that speak to them, including the ones that do not:
     checks:   — none (not modeled)
 ```
 
-Four of the nine are uncovered, and each for a structural reason worth
+Three of the nine are uncovered, each for a structural reason worth
 saying out loud rather than glossing:
 
-- **6 Identity & Trust Failures** — agentlab has no principal at all. No
-  user identity, nothing propagated across a hand-off. This is the
-  multi-agent slide's central claim ("one principal, many agents";
-  authorization derives from the human's identity, carried end-to-end)
-  and the lab currently cannot demonstrate it. The most valuable thing
-  to build next.
 - **3 Sensitive-Data Disclosure** — the only write tool writes to a local
   directory, so there is no egress to reason about. Add a tool that sends
   somewhere and the boundary becomes real.
@@ -589,6 +586,62 @@ the writer the search tool:
 The analyst was never granted that tool. It doesn't need to be: its
 output steers an agent that has it. Structurally this is a user who is
 not a Domain Admin but sits in a group nested inside one.
+
+### The principal
+
+One principal, many agents. Every stage of a run acts for the same
+human, and the gate asks *on whose authority* rather than *which agent
+is asking* — a trusted peer always answers the second question correctly,
+which is how a request gets laundered through a delegation chain.
+
+```yaml
+# config/principal.yaml
+principal:
+  name: local-user          # resolves to the account actually running this
+  scopes:
+    - read:corpus
+    - write:reports
+```
+
+Tools declare the scope they need (`ToolDefinition.required_scope`), and
+`authorize_tool_call` checks it **before** the approval gate. That
+ordering is the point:
+
+```bash
+agentlab --approve-writes --scope read:corpus "... and save the answer"
+```
+
+```
+Principal:  kj [read:corpus]
+...
+17 policy_decision  writer save_report allowed=False
+   Principal 'kj' does not hold 'write:reports', which 'save_report'
+   requires. Approval cannot substitute for authority.
+```
+
+No approval prompt appears at all. Nobody is asked to approve something
+no one was authorized to request — which is exactly the check the
+multi-agent slide says a laundered request would fail: *does "plan the
+offsite" authorize a €48 500 payment?*
+
+The two controls are independent, and a run needs both:
+
+| | principal holds the scope | principal does not |
+|---|---|---|
+| **approved by a human** | executes | refused on authority — never asked |
+| **not approved** | refused at the gate | refused on authority — never asked |
+
+Two properties make this structural rather than advisory:
+
+- **Carried with the delegation, never in the context.** The principal is
+  a parameter on `TaskState`, not a message. An identity written into a
+  context window is one the model can be steered into rewriting, so a
+  test asserts the principal's name and scopes never appear in any
+  context window.
+- **Checked at the gate, every iteration.** The permission gate runs on
+  every turn of the agent loop, and it re-reads the principal each time.
+
+---
 
 ### The write tool and the approval gate
 

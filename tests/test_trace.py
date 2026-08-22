@@ -10,7 +10,14 @@ import urllib.request
 from pathlib import Path
 
 from scripted_provider import ScriptedProvider, scripted_text
-from test_workflow import ANALYSIS, APPROVED, DRAFT, RESEARCH, make_registry
+from test_workflow import (
+    ANALYSIS,
+    APPROVED,
+    DRAFT,
+    RESEARCH,
+    TEST_PRINCIPAL,
+    make_registry,
+)
 
 from agentlab.agents.definitions import load_agents
 from agentlab.agents.runtime import AgentRuntime
@@ -41,7 +48,8 @@ def build_traced_workflow(
     )
     agents = load_agents(PROJECT_ROOT / "config" / "agents.yaml")
     return Workflow(
-        runtime=runtime, agents=agents, tracker=tracker, tracer=tracer
+        runtime=runtime, agents=agents, tracker=tracker, tracer=tracer,
+        principal=TEST_PRINCIPAL,
     )
 
 

@@ -70,15 +70,17 @@ QUERIES: tuple[SavedQuery, ...] = (
     # --- The taint story ---
     SavedQuery(
         "Which agents can untrusted documents reach?",
-        "The headline result: only one agent reads the corpus, but taint "
-        "propagates through artifacts to all of them.",
+        "Every hand-off is an egress and an ingress: only one agent reads "
+        "the corpus, but its artifacts land in the others looking internal "
+        "when they are not (root cause 1, missing ingress boundary).",
         "MATCH p = (d:Document)-[:CanInject|Produces|FlowsTo|CanCoerce*1..]->"
         "(a:Agent) RETURN p",
     ),
     SavedQuery(
         "Injection-reachable agents that read no documents",
-        "The agents whose allowlists look clean but whose context still "
-        "receives attacker-influenceable content.",
+        "Allowlists look clean, but a peer message is a prompt — the "
+        "sender built it from untrusted context, so it arrives internal "
+        "but is not.",
         "MATCH (a:Agent) WHERE NOT (:Document)-[:CanInject]->(a) "
         "AND (:Document)-[:CanInject|Produces|FlowsTo|CanCoerce*1..]->(a) "
         "RETURN a",
@@ -101,8 +103,9 @@ QUERIES: tuple[SavedQuery, ...] = (
     # --- Composed permissions ---
     SavedQuery(
         "Confused deputies: who can steer whose tools",
-        "An agent influencing another that holds a tool it was never "
-        "granted — the nested-group problem, in agent form.",
+        "Approval is a union, not a chain — each gate approves only its "
+        "own hop, so a request one gate would refuse is laundered through "
+        "a peer (T14). The nested-group problem, in agent form.",
         # RETURN p, not the nodes: BloodHound only draws relationships
         # that are part of a returned path, and the connection is the
         # entire point of this one.
@@ -110,9 +113,10 @@ QUERIES: tuple[SavedQuery, ...] = (
         "(t:Tool) WHERE NOT (a)-[:AllowedToCall]->(t) RETURN p",
     ),
     SavedQuery(
-        "Tool blast radius — who can reach each tool",
-        "Every agent that can influence a call to each tool, directly or "
-        "through another agent. Counts the real reach, not the allowlist.",
+        "Real permission surface — every reachable agent's tools",
+        "Approval is a union, not a chain: the real permission surface is "
+        "the union of every reachable agent's tools, not what any one "
+        "allowlist says.",
         "MATCH (t:Tool)<-[:AllowedToCall]-(holder:Agent) "
         "OPTIONAL MATCH (other:Agent)-[:CanCoerce]->(holder) "
         "RETURN t.name AS tool, holder.name AS holder, "
@@ -120,8 +124,8 @@ QUERIES: tuple[SavedQuery, ...] = (
     ),
     SavedQuery(
         "Write-capable tools and what guards them",
-        "Tools that can change state, with any human-approval gate on the "
-        "path. A write tool with no gate is the dangerous shape.",
+        "The permission gate from the boundary model, on the path. Root "
+        "cause 2 is what its absence looks like.",
         "MATCH p = (:Agent)-[:AllowedToCall]->(t:Tool)-[:GuardedBy]->"
         "(:ApprovalGate) WHERE t.read_only = false RETURN p",
     ),
@@ -170,9 +174,9 @@ QUERIES: tuple[SavedQuery, ...] = (
     ),
     SavedQuery(
         "Approval gates that stopped asking",
-        "Write-capable calls approved for a whole run rather than per "
-        "call — the gate is still on the path but no longer per-call. "
-        "Requires an export made with --trace-file.",
+        "Root cause 8, Oversight & Alert Fatigue (T10): the permission "
+        "gate runs on every iteration of the agent loop, but a "
+        "session-wide grant answers it once. Requires --trace-file.",
         "MATCH p = (:Agent)-[r:Approved]->(:Tool) "
         "WHERE r.scope = 'session' RETURN p",
     ),

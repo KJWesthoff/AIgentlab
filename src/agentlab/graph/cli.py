@@ -18,7 +18,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .analysis import Report, Severity, analyze
+from .analysis import Report, Severity, analyze, coverage
 from .collect import MAX_DOCUMENTS, collect_runtime, collect_static
 from .export import write_opengraph
 from .bloodhound import TOKEN_ID_VARIABLE, TOKEN_KEY_VARIABLE
@@ -92,6 +92,12 @@ def print_summary(graph: Graph, report: Report, trace: Path | None) -> None:
 
     for finding in findings:
         print(f"{_MARKERS[finding.severity]} [{finding.check}] {finding.title}")
+        if finding.boundary is not None:
+            owasp = f" · {', '.join(finding.owasp)}" if finding.owasp else ""
+            print(
+                f"     boundary: {finding.boundary.value} — "
+                f"{finding.root_cause}{owasp}"
+            )
         print(f"     {finding.detail}")
         if finding.path:
             print(f"     path: {finding.path}")
@@ -238,6 +244,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help=(
+            "Show which of the nine consolidated OWASP root causes the "
+            "graph has checks for, and which it cannot speak to."
+        ),
+    )
+    parser.add_argument(
         "--cypher",
         action="store_true",
         help="Print starter Cypher queries for BloodHound's console and exit.",
@@ -257,6 +271,18 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    if args.coverage:
+        print("Root cause → boundary → agentlab checks\n")
+        for name, boundary, checks in coverage():
+            print(f"  {name}")
+            print(f"    boundary: {boundary.value}")
+            print(
+                "    checks:   "
+                + (", ".join(checks) if checks else "— none (not modeled)")
+            )
+            print()
+        return
 
     if args.cypher:
         for saved in QUERIES:

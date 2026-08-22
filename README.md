@@ -239,7 +239,7 @@ layer:
 | `config/agents.yaml` | The four agents: prompt, profile, tool allowlist, call and output-token budgets. The researcher gets `max_output_tokens: 12000` because evidence carries verbatim excerpts and grows with the corpus — truncating it fails JSON validation and surfaces as "no evidence", indistinguishable from a corpus that genuinely lacks the topic. The others keep the 4000 default, which is what stops a writer running away to its model's 65k ceiling. The writer is prompted to include a short runnable code example on how-to questions, built only from constructs the evidence shows; the reviewer accepts such examples as supported and rejects invented APIs. Note the reviewer intentionally uses a different model *family* than the writer, so it's less likely to reproduce the writer's characteristic mistakes. |
 | `data/corpus/` | The researcher's default searchable document set. Add your own `.md` files here, or point `--corpus-dir` at another folder of `.md` files (searched recursively, so subfolders work; document names are corpus-relative paths). |
 | `data/corpus-coding/` | The coding-questions corpus (~3 MB, ~9.5k chunks). Eleven hand-written overview files (Python: asyncio, typing, data structures, exceptions, packaging, pytest; TypeScript: types/narrowing, generics, async, tsconfig, tooling) plus three downloaded doc sets in subfolders: `typescript-handbook/` (official TS Handbook + reference, CC BY 4.0), `node-api/` (16 curated Node.js API pages, MIT), and `python-docs/` (official tutorial, HOWTOs, and FAQs from the plain-text docs archive, PSF license). Select it with `--corpus-dir data/corpus-coding`. A pre-built `.vector-index.npz` (~14 MB) sits next to it after the first semantic search; delete it to force a re-embed. |
-| `tests/` | 128 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
+| `tests/` | 132 offline tests: registry resolution, OpenRouter payload/parse fixtures, policy denials (incl. an injection-style `shell_execute` attempt), budget limits, structured-output retry, both workflow paths, the chunker (code attachment, heading context, recursive discovery), the vector index (ranking, cache reuse and invalidation) via a deterministic bag-of-words embedding backend — no model downloads — and the run trace + viewer server (context-window capture, denial events, the `/events` endpoint), and the permission graph (collection against the real config, each analyzer check against a deliberately broken one, runtime overlay including a partial trace line, OpenGraph schema conformance, the icon pack, and the request-signing chain against a golden value transcribed from SpecterOps' documented client, icon registration against clean, fully-registered and partly-registered instances, and the saved-query pack including that registration updates rather than duplicates and leaves other people's queries alone), plus the write tool and approval gate (real file writes, path-traversal and symlink refusals, the fail-closed default, per-call vs. session scope, and the whole path end to end through the runtime). Workflow tests drive the orchestrator with a `ScriptedProvider` that lives in `tests/` only — it exercises control flow deterministically and its output is never presented as model results. |
 
 ---
 
@@ -480,6 +480,59 @@ agentlab-graph --trace-file run.jsonl --ingest http://127.0.0.1:8080
 No infrastructure is required for the analysis — it is plain Python over
 a few dozen nodes. BloodHound is the *rendering* surface, not the engine,
 so the findings still work in CI and in tests with nothing installed.
+
+### Correlation with the threat-model slides
+
+The lab's vocabulary is deliberately the one from *Threat modelling an AI
+Agent* and *Threat modelling a Multi-Agent System*, so a finding on
+screen and a boundary on a slide are the same claim. Every finding names
+the boundary it is evidence of:
+
+```
+ ! [approval-fatigue] 'save_report' was approved for the whole run, not per call
+     boundary: permission gate — 8 Oversight & Alert Fatigue · T10
+```
+
+| Slide language | In the graph |
+|---|---|
+| `EXTERNAL — UNTRUSTED` | `Document` / `Corpus` nodes, `trusted: false` |
+| 🛡 ingress boundary | `CanInject` edges — where untrusted content enters a context |
+| "every hand-off = egress + ingress" | `Produces` / `FlowsTo` — the artifact edges between agents |
+| "a peer message is a prompt" | `CanCoerce` — derived, because nothing configures it |
+| 🛡 permission gate | `AllowedToCall` + `GuardedBy` → `ApprovalGate` |
+| "approval is a union, not a chain" | the `confused-deputy` check |
+| "real permission surface = the union of every reachable agent's tools" | the *Real permission surface* query |
+| 🛡 provider API boundary | `Model` → `ServedBy` → `Provider`, plus the run budgets |
+| "the permission gate runs again on every iteration" | `approval-fatigue` — what a session grant does to that |
+
+`agentlab-graph --coverage` maps the nine consolidated root causes onto
+the checks that speak to them, including the ones that do not:
+
+```
+  6 Identity & Trust Failures
+    boundary: authenticated principal
+    checks:   — none (not modeled)
+```
+
+Four of the nine are uncovered, and each for a structural reason worth
+saying out loud rather than glossing:
+
+- **6 Identity & Trust Failures** — agentlab has no principal at all. No
+  user identity, nothing propagated across a hand-off. This is the
+  multi-agent slide's central claim ("one principal, many agents";
+  authorization derives from the human's identity, carried end-to-end)
+  and the lab currently cannot demonstrate it. The most valuable thing
+  to build next.
+- **3 Sensitive-Data Disclosure** — the only write tool writes to a local
+  directory, so there is no egress to reason about. Add a tool that sends
+  somewhere and the boundary becomes real.
+- **4 Data / Model / Memory Poisoning** — no persistent memory. "Shared
+  state = shared poison" needs shared state.
+- **5 Supply-Chain Compromise** — no MCP servers or third-party tools yet.
+
+A test asserts every check maps to a real root cause and to the boundary
+that root cause collapses onto, so the two models cannot drift apart
+silently.
 
 ### The mapping
 

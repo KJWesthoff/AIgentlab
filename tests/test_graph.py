@@ -19,7 +19,13 @@ import yaml
 from pydantic import BaseModel
 
 from agentlab.agents.definitions import load_agents
-from agentlab.graph.analysis import Severity, analyze
+from agentlab.graph.analysis import (
+    CORRELATION,
+    ROOT_CAUSES,
+    Severity,
+    analyze,
+    coverage,
+)
 from agentlab.graph.bloodhound import (
     TOKEN_ID_VARIABLE,
     TOKEN_KEY_VARIABLE,
@@ -1227,3 +1233,59 @@ def test_pruning_is_opt_in(monkeypatch):
 
     assert result.removed == ()
     assert not [c for c in calls if c["method"] == "DELETE"]
+
+
+# --- Correlation with the threat-model slides ---------------------------
+
+
+def test_every_check_maps_to_a_root_cause(real_graph, tmp_path):
+    """A finding no root cause explains means the two models disagree.
+
+    Either the check is testing something the threat model does not name,
+    or the threat model has a gap — both worth knowing, neither worth
+    discovering during a talk.
+    """
+    trace = write_trace(
+        tmp_path / "run.jsonl",
+        [
+            {"event": "approval_decision", "agent": "writer",
+             "tool": "save_report", "approved": True, "scope": "session"},
+            {"event": "policy_decision", "agent": "writer",
+             "tool": "save_report", "allowed": False, "reason": "gate"},
+        ],
+    )
+    collect_runtime(real_graph, trace)
+
+    for finding in analyze(real_graph).findings:
+        assert finding.check in CORRELATION, finding.check
+        assert finding.boundary is not None
+        assert finding.root_cause
+        assert finding.owasp
+
+
+def test_correlation_only_names_real_root_causes():
+    """The mapping must not invent a tenth root cause."""
+    named = {name for name, _ in ROOT_CAUSES}
+    for check, (boundary, root_cause, owasp) in CORRELATION.items():
+        assert root_cause in named, f"{check} -> {root_cause}"
+        # The boundary must be the one that root cause collapses onto.
+        expected = dict(ROOT_CAUSES)[root_cause]
+        assert boundary is expected, f"{check}: {boundary} != {expected}"
+
+
+def test_coverage_reports_the_gaps_honestly():
+    """agentlab models no principal and no egress; say so, don't hide it."""
+    gaps = {name for name, _, checks in coverage() if not checks}
+    assert "6 Identity & Trust Failures" in gaps
+    assert "3 Sensitive-Data Disclosure" in gaps
+    # And the ones it does cover are genuinely covered.
+    covered = {name for name, _, checks in coverage() if checks}
+    assert "1 Prompt Injection" in covered
+    assert "8 Oversight & Alert Fatigue" in covered
+
+
+def test_owasp_entries_are_well_formed():
+    for check, (_, _, owasp) in CORRELATION.items():
+        assert owasp, check
+        for entry in owasp:
+            assert re.fullmatch(r"(LLM\d{2}|T\d{1,2})", entry), (check, entry)

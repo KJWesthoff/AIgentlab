@@ -73,6 +73,17 @@ def to_opengraph(graph: Graph, report: Report | None = None) -> dict[str, Any]:
             properties["max_severity"] = _worst(findings).value
             properties["findings"] = [f.title for f in findings]
             properties["finding_checks"] = sorted({f.check for f in findings})
+            # Same vocabulary as the threat-model slides, so a node's
+            # entity panel names the boundary rather than only the check.
+            properties["boundaries"] = sorted(
+                {f.boundary.value for f in findings if f.boundary}
+            )
+            properties["root_causes"] = sorted(
+                {f.root_cause for f in findings if f.root_cause}
+            )
+            properties["owasp"] = sorted(
+                {entry for f in findings for entry in f.owasp}
+            )
 
         nodes.append(
             {"id": node.id, "kinds": kinds[:MAX_KINDS], "properties": properties}

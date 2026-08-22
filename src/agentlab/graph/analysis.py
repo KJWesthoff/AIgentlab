@@ -13,7 +13,7 @@ enforce. Enforcement stays in orchestration/policy.py.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from .model import TAINT_EDGES, EdgeKind, Graph, NodeKind
@@ -36,6 +36,17 @@ _ORDER = {
 }
 
 
+#: The security boundaries from the "Threat modelling an AI Agent" slide.
+#: Every finding names the boundary that is missing or not holding, so the
+#: graph and the talk use one vocabulary rather than two.
+class Boundary(str, Enum):
+    INGRESS = "ingress boundary"
+    PERMISSION_GATE = "permission gate"
+    EGRESS = "egress boundary"
+    PROVIDER_API = "provider API boundary"
+    PRINCIPAL = "authenticated principal"
+
+
 @dataclass(frozen=True)
 class Finding:
     check: str
@@ -45,6 +56,9 @@ class Finding:
     remediation: str
     nodes: tuple[str, ...] = ()
     path: str = ""
+    boundary: Boundary | None = None
+    root_cause: str = ""
+    owasp: tuple[str, ...] = ()
 
 
 @dataclass
@@ -63,6 +77,127 @@ class Report:
         return sum(1 for f in self.findings if f.severity is severity)
 
 
+#: Correlation with the consolidated OWASP slide: which of the nine root
+#: causes each check is evidence of, which boundary is missing, and the
+#: OWASP entries behind it. Kept as one table because the mapping is the
+#: point — a finding no root cause explains means either the check or the
+#: threat model has a gap.
+CORRELATION: dict[str, tuple[Boundary, str, tuple[str, ...]]] = {
+    "untrusted-to-write-tool": (
+        Boundary.PERMISSION_GATE,
+        "2 Excessive Agency & Tool Abuse",
+        ("LLM01", "LLM06", "T2"),
+    ),
+    "confused-deputy": (
+        Boundary.PERMISSION_GATE,
+        "2 Excessive Agency & Tool Abuse",
+        # Approval is a union, not a chain: each gate approves its own hop.
+        ("T14", "T3"),
+    ),
+    "indirect-injection-reach": (
+        Boundary.INGRESS,
+        "1 Prompt Injection",
+        # Every hand-off is an egress and an ingress; artifacts cross unlabeled.
+        ("LLM01", "T12", "T5"),
+    ),
+    "crosscheck-not-independent": (
+        Boundary.EGRESS,
+        "7 Hallucination & Misalignment",
+        ("LLM09", "T5"),
+    ),
+    "approval-fatigue": (
+        Boundary.PERMISSION_GATE,
+        "8 Oversight & Alert Fatigue",
+        ("T10",),
+    ),
+    "runtime-drift": (
+        Boundary.PERMISSION_GATE,
+        "2 Excessive Agency & Tool Abuse",
+        ("T3",),
+    ),
+    "observed-denial": (
+        Boundary.PERMISSION_GATE,
+        "8 Oversight & Alert Fatigue",
+        ("T8",),
+    ),
+    "dangling-tool-grant": (
+        Boundary.PERMISSION_GATE,
+        "2 Excessive Agency & Tool Abuse",
+        ("T3",),
+    ),
+    "orphaned-tool": (
+        Boundary.PERMISSION_GATE,
+        "2 Excessive Agency & Tool Abuse",
+        ("T3",),
+    ),
+    "tool-grant-without-capability": (
+        Boundary.PERMISSION_GATE,
+        "2 Excessive Agency & Tool Abuse",
+        ("T3",),
+    ),
+    "capability-gap": (
+        Boundary.PROVIDER_API,
+        "9 Denial-of-Wallet / Resource",
+        ("LLM10", "T4"),
+    ),
+    "unknown-model-profile": (
+        Boundary.PROVIDER_API,
+        "9 Denial-of-Wallet / Resource",
+        ("LLM10", "T4"),
+    ),
+}
+
+
+#: The nine consolidated root causes, each with the boundary it collapses
+#: onto. Listed in full — including the ones agentlab cannot speak to —
+#: so coverage gaps are visible rather than merely absent.
+ROOT_CAUSES: tuple[tuple[str, Boundary], ...] = (
+    ("1 Prompt Injection", Boundary.INGRESS),
+    ("2 Excessive Agency & Tool Abuse", Boundary.PERMISSION_GATE),
+    ("3 Sensitive-Data Disclosure", Boundary.EGRESS),
+    ("4 Data / Model / Memory Poisoning", Boundary.INGRESS),
+    ("5 Supply-Chain Compromise", Boundary.INGRESS),
+    ("6 Identity & Trust Failures", Boundary.PRINCIPAL),
+    ("7 Hallucination & Misalignment", Boundary.EGRESS),
+    ("8 Oversight & Alert Fatigue", Boundary.PERMISSION_GATE),
+    ("9 Denial-of-Wallet / Resource", Boundary.PROVIDER_API),
+)
+
+
+def coverage() -> list[tuple[str, Boundary, tuple[str, ...]]]:
+    """Which root causes the graph has checks for, and which it does not.
+
+    An empty check list is a real answer: agentlab models no principal, so
+    it can say nothing about identity failures, and it writes only to a
+    local directory, so it has no egress to reason about.
+    """
+    return [
+        (
+            name,
+            boundary,
+            tuple(
+                sorted(
+                    check
+                    for check, (_, root_cause, _) in CORRELATION.items()
+                    if root_cause == name
+                )
+            ),
+        )
+        for name, boundary in ROOT_CAUSES
+    ]
+
+
+def correlate(finding: Finding) -> Finding:
+    """Attach the boundary and OWASP entries a finding is evidence of."""
+    entry = CORRELATION.get(finding.check)
+    if entry is None or finding.boundary is not None:
+        return finding
+    boundary, root_cause, owasp = entry
+    return replace(
+        finding, boundary=boundary, root_cause=root_cause, owasp=owasp
+    )
+
+
 def analyze(graph: Graph) -> Report:
     report = Report()
     for check in (
@@ -79,6 +214,8 @@ def analyze(graph: Graph) -> Report:
         _observed_denials,
     ):
         check(graph, report)
+
+    report.findings = [correlate(f) for f in report.findings]
     return report
 
 

@@ -27,6 +27,113 @@ Concretely that means:
   profile ("researcher", "analyst"); a registry maps that to a provider
   and model slug.
 
+
+## The demo setup
+
+```mermaid
+flowchart LR
+    subgraph AUTH["🔑 authority — whose say-so"]
+        direction TB
+        P["principal<br/>kj"]
+        SC["scopes<br/>read:corpus<br/>write:reports"]
+        P --> SC
+    end
+
+    subgraph IN["📄 untrusted input"]
+        direction TB
+        CORPUS[("corpus<br/>82 markdown docs")]
+        DOC["documents<br/>attacker-influenceable<br/>by assumption"]
+        CORPUS --> DOC
+    end
+
+    subgraph PIPE["🤖 agents — deterministic pipeline"]
+        direction LR
+        RES["researcher"]
+        ANA["analyst"]
+        WRI["writer"]
+        REV["reviewer"]
+        RES -- "ResearchResult" --> ANA
+        ANA -- "AnalysisResult" --> WRI
+        WRI -- "Draft" --> REV
+        REV -- "ReviewResult<br/>(revision)" --> WRI
+    end
+
+    subgraph TOOLS["🔧 tools — what may be called"]
+        direction TB
+        SEARCH["search_documents<br/>read-only · read:corpus"]
+        SAVE["save_report<br/>WRITES TO DISK · write:reports"]
+    end
+
+    GATE{{"🛡 approval gate<br/>human, per call"}}
+    OUT[/"data/reports/*.md"/]
+
+    subgraph MODELS["☁ provider boundary"]
+        direction TB
+        PROF["model profiles<br/>researcher · analyst<br/>economical · reviewer"]
+        OR["OpenRouter<br/>budgets · cost caps"]
+        PROF --> OR
+    end
+
+    subgraph OBS["🔎 what the run leaves behind"]
+        direction TB
+        TRACE["run trace<br/>JSONL"]
+        GRAPH["permission graph<br/>agentlab-graph"]
+        BH["BloodHound CE<br/>attack paths"]
+        TRACE --> GRAPH --> BH
+    end
+
+    P -.->|"acts for"| PIPE
+    DOC -.->|"can inject"| RES
+    RES --> SEARCH
+    SEARCH --> CORPUS
+    WRI --> SAVE
+    SAVE --> GATE
+    GATE -- "approved" --> OUT
+    PIPE --> PROF
+    PIPE --> TRACE
+
+    classDef authority fill:#6E4FD1,stroke:#4B32A0,color:#fff,stroke-width:2px
+    classDef scope fill:#8B78DE,stroke:#6E4FD1,color:#fff
+    classDef untrusted fill:#E8663D,stroke:#B5451F,color:#fff,stroke-width:2px
+    classDef corpus fill:#D98324,stroke:#A85F14,color:#fff
+    classDef agent fill:#4A90D9,stroke:#2F6BAA,color:#fff,stroke-width:2px
+    classDef tool fill:#C9A227,stroke:#997A13,color:#fff,stroke-width:2px
+    classDef gate fill:#2E9E5B,stroke:#1E6E3E,color:#fff,stroke-width:3px
+    classDef infra fill:#5B8C7B,stroke:#3D6355,color:#fff
+    classDef muted fill:#6B7280,stroke:#4B5563,color:#fff
+    classDef output fill:#F5F0E6,stroke:#C9A227,color:#3A2E12
+
+    class P authority
+    class SC scope
+    class DOC untrusted
+    class CORPUS corpus
+    class RES,ANA,WRI,REV agent
+    class SEARCH,SAVE tool
+    class GATE gate
+    class PROF,OR infra
+    class TRACE,GRAPH,BH muted
+    class OUT output
+```
+
+The colours carry the same meaning here as they do on the nodes in
+BloodHound, so the picture and the graph teach one vocabulary:
+
+| | | |
+|---|---|---|
+| 🟣 violet | authority | the human a run acts for, and what they granted |
+| 🔴 warm | untrusted | content that is, or may become, attacker-influenced |
+| 🔵 blue | agents | the pipeline stages, each with its own allowlist |
+| 🟡 gold | privilege | tools — what an attack path is trying to reach |
+| 🟢 green | control | the approval gate standing in the way |
+
+Read it as the demo does. Untrusted documents reach the **researcher**,
+which is the only agent that touches the corpus. Its artifact flows to
+the **analyst**, then the **writer** — so content the researcher read is
+now in three contexts that never opened a document. The writer holds
+`save_report`, the one tool that changes state, and every call to it
+stops at the **approval gate**. That is the whole attack path, and no
+single permission in it is wrong.
+
 ---
 
 ## Quick start

@@ -97,6 +97,14 @@
   .policy-line { font-size: 0.82rem; margin-bottom: 0.5rem; }
   .policy-line.ok { color: var(--ok); }
   .policy-line.denied { color: var(--danger); font-weight: 600; }
+  .card.pending { border-color: var(--tool); background: var(--warn-bg); }
+  .card.approved { border-color: var(--ok); background: var(--ok-bg); }
+  .verdict { font-size: 0.84rem; font-weight: 600; margin-top: 0.35rem; }
+  .verdict.ok { color: var(--ok); }
+  .verdict.denied { color: var(--danger); }
+  .verdict.session { color: var(--danger); }
+  .verdict-note { font-size: 0.78rem; color: var(--muted); font-weight: 400;
+                  margin-top: 0.1rem; }
 
   aside .panel {
     background: var(--panel); border: 1px solid var(--border);
@@ -106,9 +114,14 @@
              color: var(--muted); margin: 0 0 0.5rem; }
   aside ul { margin: 0.2rem 0 0.6rem; padding-left: 1.1rem; font-size: 0.82rem; }
   aside li { margin-bottom: 0.15rem; }
-  .agent-row { font-size: 0.82rem; margin-bottom: 0.45rem; }
+  .agent-row { font-size: 0.82rem; margin-bottom: 0.55rem; }
   .agent-row code { background: var(--code-bg); border-radius: 4px; padding: 0 0.3rem;
                     font-size: 0.78rem; }
+  .tally { font-family: ui-monospace, monospace; font-size: 0.76rem;
+           color: var(--muted); margin-top: 0.1rem; }
+  .tally.spent { color: var(--text); }
+  .card .tally { font-size: 0.78rem; margin-top: 0.2rem; }
+  .card .tally .run-total { color: var(--muted); padding-left: 0.4rem; }
   .counter-grid { display: grid; grid-template-columns: 1fr auto; gap: 0.15rem 0.6rem;
                   font-size: 0.84rem; }
   .counter-grid b { font-family: ui-monospace, monospace; font-weight: 600; text-align: right; }
@@ -136,9 +149,13 @@
       <h2>Live counters</h2>
       <div class="counter-grid">
         <span>Model calls</span><b id="c-model">0</b>
+        <span>Tokens in</span><b id="c-tokens-in">0</b>
+        <span>Tokens out</span><b id="c-tokens-out">0</b>
+        <span>Spend</span><b id="c-spend">$0.0000</b>
         <span>Tool calls executed</span><b id="c-tool">0</b>
         <span>Untrusted-labeled results</span><b id="c-untrusted">0</b>
         <span>Policy denials</span><b id="c-denied">0</b>
+        <span>Human write approvals</span><b id="c-approved">0</b>
         <span>Schema-validated artifacts</span><b id="c-artifacts">0</b>
       </div>
     </div>
@@ -165,7 +182,20 @@
 const $ = (id) => document.getElementById(id);
 const stream = $("stream");
 let lastSeq = 0, currentStage = null, runEnded = false;
-const counters = { model: 0, tool: 0, untrusted: 0, denied: 0, artifacts: 0 };
+const counters = { model: 0, tool: 0, untrusted: 0, denied: 0, artifacts: 0, approved: 0 };
+
+// A write-capable call is escalated, not denied: policy_decision says
+// requires_approval, and the answer arrives later in approval_decision.
+// The card stays open in between so the page never shows an approved
+// write as a denial.
+const pendingApprovals = new Map();
+const approvalKey = (e) => e.agent + "\u0000" + e.tool;
+
+// Token tally: one entry per agent, plus the run total. Every model call
+// that reports usage adds to both, so the sidebar shows where the run's
+// tokens are actually going while it is still going there.
+const agentTallies = new Map();
+const runTally = { calls: 0, input: 0, output: 0, cost: 0 };
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -178,6 +208,42 @@ function bumpCounter(name) {
   const cell = $("c-" + name);
   cell.textContent = counters[name];
   if (name === "denied") cell.classList.add("alert");
+}
+function num(value) { return Number(value || 0).toLocaleString(); }
+function tally(name) {
+  let entry = agentTallies.get(name);
+  if (!entry) {
+    entry = { calls: 0, input: 0, output: 0, cost: 0, node: null };
+    agentTallies.set(name, entry);
+  }
+  return entry;
+}
+function tallyText(entry) {
+  if (!entry.calls) return "no model calls yet";
+  return `${entry.calls} call${entry.calls === 1 ? "" : "s"} · ` +
+    `${num(entry.input)} in + ${num(entry.output)} out = ` +
+    `${num(entry.input + entry.output)} tokens · $${entry.cost.toFixed(4)}`;
+}
+function recordUsage(agent, usage) {
+  const entry = tally(agent);
+  entry.calls += 1;
+  runTally.calls += 1;
+  for (const [key, field] of [["input", "input_tokens"], ["output", "output_tokens"]]) {
+    const value = Number(usage[field] || 0);
+    entry[key] += value;
+    runTally[key] += value;
+  }
+  const cost = Number(usage.estimated_cost || 0);
+  entry.cost += cost;
+  runTally.cost += cost;
+  if (entry.node) {
+    entry.node.textContent = tallyText(entry);
+    if (entry.input || entry.output) entry.node.classList.add("spent");
+  }
+  $("c-tokens-in").textContent = num(runTally.input);
+  $("c-tokens-out").textContent = num(runTally.output);
+  $("c-spend").textContent = "$" + runTally.cost.toFixed(4);
+  return entry;
 }
 function setStatus(text, cls) {
   const s = $("status"); s.textContent = text; s.className = cls || "";
@@ -224,8 +290,11 @@ function renderMessages(parent, messages, open) {
 function usageLine(usage) {
   if (!usage) return "";
   const parts = [];
-  if (usage.input_tokens != null) parts.push(usage.input_tokens + " in");
-  if (usage.output_tokens != null) parts.push(usage.output_tokens + " out");
+  if (usage.input_tokens != null) parts.push(num(usage.input_tokens) + " in");
+  if (usage.output_tokens != null) parts.push(num(usage.output_tokens) + " out");
+  if (usage.input_tokens != null && usage.output_tokens != null) {
+    parts.push(num(usage.input_tokens + usage.output_tokens) + " tokens");
+  }
   if (usage.estimated_cost != null) parts.push("$" + Number(usage.estimated_cost).toFixed(5));
   return parts.join(" · ");
 }
@@ -234,7 +303,7 @@ function updateBudget(b) {
   $("budget").textContent =
     `budget: ${b.model_calls}/${b.maximum_model_calls} model calls · ` +
     `${b.tool_calls}/${b.maximum_tool_calls} tool calls · ` +
-    `${b.input_tokens}+${b.output_tokens} tokens · ` +
+    `${num(b.input_tokens)}+${num(b.output_tokens)} tokens · ` +
     `$${Number(b.cost_usd).toFixed(4)}/$${Number(b.maximum_cost_usd).toFixed(2)}`;
 }
 
@@ -253,6 +322,9 @@ const handlers = {
       info.querySelectorAll("code")[0].textContent = agent.model_profile;
       info.querySelectorAll("code")[1].textContent = tools;
       row.appendChild(info);
+      const entry = tally(agent.name);
+      entry.node = el("div", "tally", tallyText(entry));
+      row.appendChild(entry.node);
       box.appendChild(row);
     }
     updateBudget(e.budget);
@@ -271,11 +343,21 @@ const handlers = {
   },
   model_call_finished(e) {
     bumpCounter("model");
-    const c = card("response");
+    const c = card("response" + (e.call_kind === "structured" ? " — artifact" : ""));
     const badge = el("span", "badge model", e.model || "model");
     c.firstChild.appendChild(badge);
     const usage = usageLine(e.usage);
-    if (usage) c.appendChild(el("div", "meta", usage));
+    if (usage) {
+      c.appendChild(el("div", "meta",
+        usage + (e.round_trips > 1
+          ? ` · ${e.round_trips} round-trips (schema retry)` : "")));
+    }
+    const entry = recordUsage(e.agent, e.usage || {});
+    const line = el("div", "tally spent", `${e.agent} so far: ${tallyText(entry)}`);
+    line.appendChild(el("span", "run-total",
+      `· run so far: ${num(runTally.input + runTally.output)} tokens · ` +
+      `$${runTally.cost.toFixed(4)}`));
+    c.appendChild(line);
     for (const call of e.tool_calls || []) {
       c.appendChild(el("pre", null,
         `proposes tool ${call.name}(${JSON.stringify(call.arguments)})`));
@@ -290,6 +372,13 @@ const handlers = {
     if (e.allowed) {
       target().appendChild(el("div", "policy-line ok",
         `✓ policy allowed ${e.tool} (on ${e.agent}'s allowlist, read-only)`));
+    } else if (e.requires_approval) {
+      const c = card("approval required — " + e.tool, "pending");
+      c.appendChild(el("div", "meta",
+        `agent: ${e.agent} · write-capable, so policy escalates to a human ` +
+        "rather than deciding alone"));
+      const verdict = c.appendChild(el("div", "verdict", "⏳ waiting for a human…"));
+      pendingApprovals.set(approvalKey(e), { card: c, verdict });
     } else {
       bumpCounter("denied");
       const c = card("policy denial — " + e.tool, "denied");
@@ -297,6 +386,48 @@ const handlers = {
       c.appendChild(el("pre", null, "Denied by policy: " + (e.reason || "")));
       c.appendChild(el("div", "meta",
         "The denial text is fed back to the model as the tool result."));
+    }
+  },
+  approval_requested(e) {
+    const pending = pendingApprovals.get(approvalKey(e));
+    if (!pending) return;
+    const d = detailsBlock(pending.card, "what the human is being shown", true);
+    d.appendChild(el("pre", null, JSON.stringify(e.arguments, null, 2)));
+  },
+  approval_decision(e) {
+    const key = approvalKey(e);
+    let pending = pendingApprovals.get(key);
+    if (!pending) {  // an approval without a traced escalation before it
+      const fresh = card("approval — " + e.tool, "pending");
+      pending = { card: fresh, verdict: fresh.appendChild(el("div", "verdict")) };
+    }
+    pendingApprovals.delete(key);
+    const c = pending.card, line = pending.verdict;
+
+    if (!e.approved) {
+      bumpCounter("denied");
+      c.className = "card denied";
+      line.className = "verdict denied";
+      line.textContent = "✗ denied — " + (e.reason || "no approval given");
+      c.appendChild(el("div", "verdict-note",
+        "The denial text is fed back to the model as the tool result."));
+      return;
+    }
+
+    bumpCounter("approved");
+    c.className = "card approved";
+    if (e.scope === "session") {
+      line.className = "verdict session";
+      line.textContent = "⚠ approved for the rest of this run (session grant)";
+      c.appendChild(el("div", "verdict-note",
+        `Later ${e.tool} calls are auto-approved: the prompt still prints, ` +
+        "but no human sees it in time to object. A per-call control just " +
+        "became a per-session one."));
+    } else {
+      line.className = "verdict ok";
+      line.textContent = "✓ approved by a human (this call only)";
+      c.appendChild(el("div", "verdict-note",
+        "The gate stays a gate — the next call asks again."));
     }
   },
   tool_result(e) {

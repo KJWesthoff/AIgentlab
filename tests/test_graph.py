@@ -444,6 +444,83 @@ def test_runtime_overlay_records_calls_denials_and_documents(
     assert "observed-denial" in checks
 
 
+def test_an_approved_write_is_not_recorded_as_a_denial(real_graph, tmp_path):
+    """An escalation is not a refusal, and must not report as one.
+
+    Policy returns allowed=False for a write-capable call because it
+    defers to a human. Treating that as a denial made the report claim
+    "the control worked" about a write that was approved and executed,
+    with an APPROVED edge sitting next to the DENIED one.
+    """
+    trace = write_trace(
+        tmp_path / "run.jsonl",
+        [
+            {
+                "event": "policy_decision",
+                "agent": "writer",
+                "tool": "save_report",
+                "allowed": False,
+                "requires_approval": True,
+                "reason": "Write-capable tools require human approval.",
+            },
+            {
+                "event": "approval_decision",
+                "agent": "writer",
+                "tool": "save_report",
+                "approved": True,
+                "scope": "once",
+            },
+        ],
+    )
+    collect_runtime(real_graph, trace)
+
+    assert not real_graph.outgoing(
+        f"{AGENT}:writer", frozenset({EdgeKind.DENIED})
+    )
+    approvals = real_graph.outgoing(
+        f"{AGENT}:writer", frozenset({EdgeKind.APPROVED})
+    )
+    assert [real_graph.label(e.target) for e in approvals] == ["save_report"]
+    assert "observed-denial" not in {
+        f.check for f in analyze(real_graph).findings
+    }
+
+
+def test_a_write_the_human_refused_is_recorded_as_a_denial(
+    real_graph, tmp_path
+):
+    """The denial still has to land — just from the human, not the escalation."""
+    trace = write_trace(
+        tmp_path / "run.jsonl",
+        [
+            {
+                "event": "policy_decision",
+                "agent": "writer",
+                "tool": "save_report",
+                "allowed": False,
+                "requires_approval": True,
+                "reason": "Write-capable tools require human approval.",
+            },
+            {
+                "event": "approval_decision",
+                "agent": "writer",
+                "tool": "save_report",
+                "approved": False,
+                "scope": "none",
+                "reason": "Denied by the human approver.",
+            },
+        ],
+    )
+    collect_runtime(real_graph, trace)
+
+    denials = real_graph.outgoing(
+        f"{AGENT}:writer", frozenset({EdgeKind.DENIED})
+    )
+    assert [real_graph.label(e.target) for e in denials] == ["save_report"]
+    assert denials[0].properties["reason"] == "Denied by the human approver."
+    assert "observed-denial" in {f.check for f in analyze(real_graph).findings}
+
+
 def test_runtime_overlay_tolerates_a_partial_final_line(real_graph, tmp_path):
     """A trace can be read while the run writing it is still going."""
     trace = tmp_path / "run.jsonl"

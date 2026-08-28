@@ -366,17 +366,16 @@ def _apply_event(graph: Graph, event: dict) -> None:
     if not graph.has_node(agent_id):
         return
 
-    if kind == "policy_decision" and not event.get("allowed", True):
-        tool_id = node_id(NodeKind.TOOL, event.get("tool", ""))
-        graph.add_node(
-            tool_id, NodeKind.TOOL, event.get("tool", ""), observed_only=True
-        )
-        graph.add_edge(
-            agent_id,
-            tool_id,
-            EdgeKind.DENIED,
-            reason=event.get("reason", ""),
-        )
+    # A write-capable call is escalated, not refused: policy defers and the
+    # human answers in approval_decision. Recording the escalation as a
+    # denial reported "the control held" for writes that were approved and
+    # executed — with the APPROVED edge sitting right beside it.
+    if (
+        kind == "policy_decision"
+        and not event.get("allowed", True)
+        and not event.get("requires_approval", False)
+    ):
+        _add_denied_edge(graph, agent_id, event, event.get("reason", ""))
 
     elif kind == "tool_result":
         tool_id = node_id(NodeKind.TOOL, event.get("tool", ""))
@@ -384,21 +383,36 @@ def _apply_event(graph: Graph, event: dict) -> None:
             graph.add_edge(agent_id, tool_id, EdgeKind.CALLED)
         _record_observed_documents(graph, agent_id, event.get("result", ""))
 
-    elif kind == "approval_decision" and event.get("approved"):
-        tool_id = node_id(NodeKind.TOOL, event.get("tool", ""))
-        if graph.has_node(tool_id):
-            graph.add_edge(
-                agent_id,
-                tool_id,
-                EdgeKind.APPROVED,
-                scope=event.get("scope", "once"),
-            )
+    elif kind == "approval_decision":
+        if event.get("approved"):
+            tool_id = node_id(NodeKind.TOOL, event.get("tool", ""))
+            if graph.has_node(tool_id):
+                graph.add_edge(
+                    agent_id,
+                    tool_id,
+                    EdgeKind.APPROVED,
+                    scope=event.get("scope", "once"),
+                )
+        else:
+            # The refusal the escalation was deferred to. This is where a
+            # write-capable denial actually happens.
+            _add_denied_edge(graph, agent_id, event, event.get("reason", ""))
 
     elif kind == "artifact_produced":
         artifact = event.get("artifact_type", "")
         artifact_id = node_id(NodeKind.ARTIFACT, artifact)
         graph.add_node(artifact_id, NodeKind.ARTIFACT, artifact)
         graph.add_edge(agent_id, artifact_id, EdgeKind.PRODUCES, observed=True)
+
+
+def _add_denied_edge(
+    graph: Graph, agent_id: str, event: dict, reason: str
+) -> None:
+    tool_id = node_id(NodeKind.TOOL, event.get("tool", ""))
+    graph.add_node(
+        tool_id, NodeKind.TOOL, event.get("tool", ""), observed_only=True
+    )
+    graph.add_edge(agent_id, tool_id, EdgeKind.DENIED, reason=reason)
 
 
 def _record_observed_documents(

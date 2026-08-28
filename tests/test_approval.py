@@ -296,6 +296,31 @@ def test_runtime_denies_the_write_with_no_approver(tmp_path):
     assert any(e["event"] == "approval_decision" and not e["approved"] for e in events)
 
 
+def test_the_escalation_is_traced_as_an_escalation_not_a_denial(tmp_path):
+    """`policy_decision` must say it is asking, not refusing.
+
+    Policy returns allowed=False for a write-capable call because it
+    will not decide alone — the human decides next. A trace that only
+    carries the flag showed the live viewer a denial for a call that
+    was then approved and executed, with the write's own tool_result
+    printed underneath it.
+    """
+    _, events, written = run_writer_proposing_a_save(tmp_path, approver("y\n"))
+    assert written.exists()
+
+    decision = next(e for e in events if e["event"] == "policy_decision")
+    assert decision["allowed"] is False
+    assert decision["requires_approval"] is True
+
+    approval = next(e for e in events if e["event"] == "approval_decision")
+    assert approval["approved"] is True
+    # Nothing in the trace claims this call was denied.
+    assert not any(
+        e["event"] == "policy_decision" and not e.get("requires_approval")
+        for e in events
+    )
+
+
 def test_runtime_writes_the_file_once_a_human_approves(tmp_path):
     state, events, written = run_writer_proposing_a_save(tmp_path, approver("y\n"))
 

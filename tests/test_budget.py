@@ -42,3 +42,23 @@ def test_tool_call_limit():
 
     with pytest.raises(BudgetExceeded, match="tool calls"):
         tracker.before_tool_call()
+
+
+def test_structured_retry_meters_both_round_trips():
+    """A schema retry costs two calls; the budget must see two.
+
+    Before usage travelled back from ``generate_structured``, a
+    structured call was metered as one call with zero tokens — the
+    tokens a retry actually spent were invisible to the cap and to the
+    viewer's tally.
+    """
+    tracker = BudgetTracker(budget=ExecutionBudget(maximum_model_calls=3))
+    tracker.record_model_usage(
+        Usage(input_tokens=300, output_tokens=90, estimated_cost=0.004),
+        calls=2,
+    )
+
+    assert tracker.model_calls == 2
+    assert tracker.input_tokens == 300
+    assert tracker.output_tokens == 90
+    assert tracker.accumulated_cost_usd == pytest.approx(0.004)

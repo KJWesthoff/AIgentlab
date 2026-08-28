@@ -156,7 +156,7 @@ class AgentRuntime:
             schema=response_type.__name__,
             messages=serialize_messages(final_messages),
         )
-        artifact = await self._service.generate_structured(
+        generation = await self._service.generate_structured(
             profile_name=agent.model_profile,
             request=GenerationRequest(
                 messages=final_messages,
@@ -165,19 +165,28 @@ class AgentRuntime:
             response_type=response_type,
             required_capabilities=agent.required_capabilities,
         )
-        # generate_structured may internally use up to two model calls; the
-        # tracker meters it as one logical call with unknown usage, which is
-        # why maximum_model_calls should stay conservative.
-        self._tracker.model_calls += 1
+        # generate_structured may spend a second round-trip re-asking for a
+        # schema-valid reply; it reports both, so the tokens land in the
+        # budget and in the viewer's per-agent tally like any other call.
+        self._tracker.record_model_usage(generation.usage, calls=generation.calls)
         state.log("model_call", agent=agent.name, structured=True)
+        self._tracer.emit(
+            "model_call_finished",
+            agent=agent.name,
+            model=generation.resolved_model,
+            call_kind="structured",
+            round_trips=generation.calls,
+            usage=generation.usage.model_dump(),
+            budget=budget_snapshot(self._tracker),
+        )
         self._tracer.emit(
             "artifact_produced",
             agent=agent.name,
             artifact_type=response_type.__name__,
-            artifact=artifact.model_dump(),
+            artifact=generation.artifact.model_dump(),
         )
 
-        return artifact
+        return generation.artifact
 
     async def _tool_loop(
         self,
@@ -246,6 +255,10 @@ class AgentRuntime:
                     agent=agent.name,
                     tool=call.name,
                     allowed=decision.allowed,
+                    # Not a denial — an escalation. Without this the viewer
+                    # cannot tell "policy said no" from "policy is asking a
+                    # human", and renders an approved write as a denial.
+                    requires_approval=decision.requires_approval,
                     reason=decision.reason,
                     principal=(
                         state.principal.name if state.principal else None

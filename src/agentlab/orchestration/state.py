@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..llm.types import GenerationResponse
+from ..llm.types import GenerationResponse, Usage
 from .principal import Principal
 
 
@@ -54,8 +54,16 @@ class BudgetTracker(BaseModel):
             raise BudgetExceeded("Maximum tool calls reached.")
 
     def record_model_call(self, response: GenerationResponse) -> None:
-        self.model_calls += 1
-        usage = response.usage
+        self.record_model_usage(response.usage)
+
+    def record_model_usage(self, usage: Usage, *, calls: int = 1) -> None:
+        """Meter one logical model call — or ``calls`` round-trips of one.
+
+        Structured generation can spend two round-trips on a single
+        logical call; both are metered, because a budget that only sees
+        the calls it predicted is not a cap.
+        """
+        self.model_calls += calls
         self.input_tokens += usage.input_tokens or 0
         self.output_tokens += usage.output_tokens or 0
         self.accumulated_cost_usd += usage.estimated_cost or 0.0

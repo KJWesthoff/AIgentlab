@@ -9,11 +9,19 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
-from typing import TypeVar
+from dataclasses import dataclass
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from .types import GenerationRequest, GenerationResponse, Message, Role
+from .types import (
+    GenerationRequest,
+    GenerationResponse,
+    Message,
+    Role,
+    Usage,
+    sum_usage,
+)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -38,6 +46,23 @@ class StructuredOutputError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class StructuredGeneration(Generic[T]):
+    """A validated artifact plus what producing it actually cost.
+
+    Structured generation can take a second round-trip when the first
+    reply fails schema validation. Returning the artifact alone would
+    hide those tokens from the budget tracker and the live viewer, so
+    the cost travels back with it: ``usage`` is the sum over every
+    round-trip and ``calls`` is how many there were.
+    """
+
+    artifact: T
+    usage: Usage
+    resolved_model: str | None = None
+    calls: int = 1
+
+
 class LLMProvider(ABC):
     @abstractmethod
     async def generate(
@@ -58,7 +83,7 @@ class LLMProvider(ABC):
         model: str,
         request: GenerationRequest,
         response_type: type[T],
-    ) -> T:
+    ) -> StructuredGeneration[T]:
         """Generate a response validated against ``response_type``.
 
         On a validation failure the model gets exactly one retry that
@@ -73,7 +98,7 @@ class LLMProvider(ABC):
             raise StructuredOutputError("The model returned no structured text.")
 
         try:
-            return response_type.model_validate_json(extract_json(response.text))
+            artifact = response_type.model_validate_json(extract_json(response.text))
         except (ValidationError, json.JSONDecodeError) as error:
             retry_request = request.model_copy(deep=True)
             retry_request.messages = [
@@ -96,10 +121,24 @@ class LLMProvider(ABC):
                 ) from error
 
             try:
-                return response_type.model_validate_json(
+                retry_artifact = response_type.model_validate_json(
                     extract_json(retry_response.text)
                 )
             except (ValidationError, json.JSONDecodeError) as retry_error:
                 raise StructuredOutputError(
                     f"Structured output failed validation twice: {retry_error}"
                 ) from retry_error
+
+            return StructuredGeneration(
+                artifact=retry_artifact,
+                usage=sum_usage([response.usage, retry_response.usage]),
+                resolved_model=retry_response.resolved_model,
+                calls=2,
+            )
+
+        return StructuredGeneration(
+            artifact=artifact,
+            usage=response.usage,
+            resolved_model=response.resolved_model,
+            calls=1,
+        )

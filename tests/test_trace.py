@@ -22,7 +22,7 @@ from test_workflow import (
 from agentlab.agents.definitions import load_agents
 from agentlab.agents.runtime import AgentRuntime
 from agentlab.llm.service import LLMService
-from agentlab.llm.types import ToolCall
+from agentlab.llm.types import ToolCall, Usage
 from agentlab.observability.server import TraceServer
 from agentlab.observability.trace import TraceWriter
 from agentlab.orchestration.state import BudgetTracker, ExecutionBudget
@@ -159,7 +159,45 @@ async def test_trace_records_policy_denial(tmp_path):
     assert decision["allowed"] is False
     assert decision["tool"] == "shell_execute"
     assert decision["reason"]
+    # A tool off the allowlist is refused outright — no human is asked,
+    # which is what separates this from a write-capable escalation.
+    assert decision["requires_approval"] is False
+    assert not any(e["event"] == "approval_requested" for e in events)
     assert not any(e["event"] == "tool_result" for e in events)
+
+
+async def test_every_model_call_reports_usage_for_the_viewers_tally(tmp_path):
+    """The viewer tallies tokens per agent, so every call must report.
+
+    The analyst and reviewer only ever make structured calls; when
+    those returned the artifact alone their columns read zero, which
+    looks like a broken tally rather than the spend it hides.
+    """
+    usage = Usage(input_tokens=200, output_tokens=40, estimated_cost=0.0015)
+    events = await run_scripted(
+        tmp_path,
+        [
+            scripted_text(RESEARCH, usage=usage),
+            scripted_text(ANALYSIS, usage=usage),
+            scripted_text(DRAFT, usage=usage),
+            scripted_text(APPROVED, usage=usage),
+        ],
+    )
+
+    finished = [e for e in events if e["event"] == "model_call_finished"]
+    agents = {e["agent"] for e in finished}
+    assert {"researcher", "analyst", "writer", "reviewer"} <= agents
+    assert all(e["usage"]["input_tokens"] == 200 for e in finished)
+
+    # Structured calls carry the artifact's own cost, and the running
+    # budget the viewer prints beside the tally agrees with the sum.
+    structured = [e for e in finished if e.get("call_kind") == "structured"]
+    assert {e["agent"] for e in structured} == {"analyst", "reviewer"}
+    assert all(e["round_trips"] == 1 for e in structured)
+
+    last = finished[-1]["budget"]
+    assert last["input_tokens"] == 200 * len(finished)
+    assert last["output_tokens"] == 40 * len(finished)
 
 
 def test_server_serves_viewer_and_events(tmp_path):

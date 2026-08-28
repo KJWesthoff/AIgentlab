@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 from scripted_provider import ScriptedProvider, scripted_text
 
-from agentlab.agents.definitions import load_agents
+from agentlab.agents.definitions import AnalysisResult, load_agents
 from agentlab.agents.runtime import AgentRuntime
 from agentlab.llm.registry import ModelProfile, ModelRegistry
-from agentlab.llm.types import ToolCall
+from agentlab.llm.types import GenerationRequest, Message, Role, ToolCall, Usage
 from agentlab.orchestration.state import BudgetTracker, ExecutionBudget
 from agentlab.orchestration.principal import Principal
 from agentlab.orchestration.workflow import Workflow
@@ -198,6 +198,41 @@ async def test_invalid_structured_output_gets_one_retry():
 
     result = await build_workflow(provider).execute("Explain RAG vs lookup.")
     assert result.approved
+
+
+async def test_structured_generation_reports_what_both_round_trips_cost():
+    """The retry's tokens must travel back with the artifact.
+
+    The viewer tallies tokens per agent from what the runtime reports;
+    a structured call that dropped its usage on the floor showed the
+    analyst and reviewer spending nothing at all.
+    """
+    provider = ScriptedProvider(
+        [
+            scripted_text(
+                "not json",
+                usage=Usage(input_tokens=100, output_tokens=20, estimated_cost=0.001),
+            ),
+            scripted_text(
+                ANALYSIS,
+                usage=Usage(input_tokens=140, output_tokens=30, estimated_cost=0.002),
+            ),
+        ]
+    )
+
+    generation = await provider.generate_structured(
+        model="scripted/model",
+        request=GenerationRequest(
+            messages=[Message(role=Role.USER, content="analyze")]
+        ),
+        response_type=AnalysisResult,
+    )
+
+    assert generation.calls == 2
+    assert generation.usage.input_tokens == 240
+    assert generation.usage.output_tokens == 50
+    assert generation.usage.estimated_cost == pytest.approx(0.003)
+    assert generation.artifact.conclusions
 
 
 def test_search_documents_finds_corpus_content():

@@ -10,7 +10,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from .interface import LLMProvider
+from .interface import LLMProvider, StructuredGeneration
 from .registry import ModelRegistry
 from .types import GenerationRequest, GenerationResponse
 
@@ -53,7 +53,7 @@ class LLMService:
         request: GenerationRequest,
         response_type: type[T],
         required_capabilities: set[str] | None = None,
-    ) -> T:
+    ) -> StructuredGeneration[T]:
         required = {"structured_output"} | (required_capabilities or set())
         profile = self._model_registry.resolve(profile_name, required)
         provider = self._provider_for(profile.provider)

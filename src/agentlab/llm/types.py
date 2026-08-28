@@ -7,6 +7,7 @@ provider-specific schema leaks past this module.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import Enum
 from typing import Any
 
@@ -59,6 +60,27 @@ class Usage(BaseModel):
     output_tokens: int | None = None
     total_tokens: int | None = None
     estimated_cost: float | None = None
+
+
+def sum_usage(usages: Iterable[Usage]) -> Usage:
+    """Add several usages into one — e.g. a structured call and its retry.
+
+    A field stays ``None`` unless at least one usage reported it, so
+    "the provider told us nothing" never collapses into a confident zero
+    in the budget line or the viewer's tally.
+    """
+    totals: dict[str, float | None] = {
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "estimated_cost": None,
+    }
+    for usage in usages:
+        for field in totals:
+            value = getattr(usage, field)
+            if value is not None:
+                totals[field] = (totals[field] or 0) + value
+    return Usage(**totals)
 
 
 class GenerationResponse(BaseModel):

@@ -391,6 +391,16 @@ def main() -> None:
                     "File Ingest for its error detail."
                 )
             elif result.succeeded:
+                if result.cleared:
+                    # Clearing deletes and recreates every node, so the
+                    # graph ids an open Explore view is holding no longer
+                    # resolve. It reads as data that went missing rather
+                    # than a stale tab, and the data is fine.
+                    print(
+                        "  Reload the BloodHound tab — --replace gave every "
+                        "node a new id, and an open Explore view still "
+                        "holds the old ones."
+                    )
                 print(
                     "  Query it under Explore → Cypher: "
                     "MATCH (n:AgentLab) RETURN n"

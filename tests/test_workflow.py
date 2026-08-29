@@ -49,6 +49,17 @@ REJECTED = json.dumps(
         "unsupported_statements": [],
     }
 )
+# Reviewers file an objection under either key, and reject with neither.
+REJECTED_UNSUPPORTED = json.dumps(
+    {
+        "approved": False,
+        "required_changes": [],
+        "unsupported_statements": ["The draft omits the append modes."],
+    }
+)
+REJECTED_SILENTLY = json.dumps(
+    {"approved": False, "required_changes": [], "unsupported_statements": []}
+)
 
 
 def make_registry() -> ModelRegistry:
@@ -147,6 +158,46 @@ async def test_rejected_draft_triggers_one_revision():
     assert result.approved
     assert result.revisions == 1
     assert "rag-fundamentals.md" in result.final_answer
+
+
+async def test_unsupported_statements_are_forwarded_as_revision_notes():
+    """A rejection that names its problem under the other key still buys a
+    revision — and the writer is told what the problem was."""
+    provider = ScriptedProvider(
+        responses=[
+            scripted_text(RESEARCH),
+            scripted_text(ANALYSIS),
+            scripted_text(DRAFT),
+            scripted_text(REJECTED_UNSUPPORTED),
+            scripted_text(DRAFT + " Open with 'a' to append."),
+            scripted_text(APPROVED),
+        ]
+    )
+
+    result = await build_workflow(provider).execute("Explain RAG vs lookup.")
+
+    assert result.approved
+    assert result.revisions == 1
+    assert "omits the append modes" in provider.requests[-2].messages[1].content
+
+
+async def test_rejection_with_no_notes_does_not_buy_a_revision():
+    """Without notes the writer would get back the input it just answered,
+    so the second pass could only repeat the first."""
+    provider = ScriptedProvider(
+        responses=[
+            scripted_text(RESEARCH),
+            scripted_text(ANALYSIS),
+            scripted_text(DRAFT),
+            scripted_text(REJECTED_SILENTLY),
+        ]
+    )
+
+    result = await build_workflow(provider).execute("Explain RAG vs lookup.")
+
+    assert not result.approved
+    assert result.revisions == 0
+    assert result.final_answer == DRAFT
 
 
 async def test_unauthorized_tool_is_denied_not_executed():

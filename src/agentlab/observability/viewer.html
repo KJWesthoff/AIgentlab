@@ -89,6 +89,10 @@
   .msg .role { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
   .msg.system .role { color: var(--system); } .msg.user .role { color: var(--user); }
   .msg.assistant .role { color: var(--assistant); } .msg.tool .role { color: var(--tool); }
+  .replay-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
+                  color: var(--muted); margin-top: 0.4rem; }
+  pre.replay { color: var(--muted); border-style: dashed; background: none;
+               margin-top: 0.15rem; }
   .untrusted-banner {
     font-size: 0.75rem; font-weight: 600; color: var(--danger);
     background: var(--danger-bg); border-radius: 4px;
@@ -281,8 +285,12 @@ function renderMessages(parent, messages, open) {
     }
     if (m.content) box.appendChild(el("pre", null, m.content));
     for (const call of m.tool_calls || []) {
-      box.appendChild(el("pre", null,
-        `→ proposes tool ${call.name}(${JSON.stringify(call.arguments)})`));
+      // History, not a fresh proposal — the response card above already
+      // announced this call, and every later turn replays it. Repeating
+      // that card's wording here made one call read as two.
+      box.appendChild(el("div", "replay-label", "tool call proposed earlier"));
+      box.appendChild(el("pre", "replay",
+        `${call.name}(${JSON.stringify(call.arguments)})`));
     }
     d.appendChild(box);
   }
@@ -460,8 +468,17 @@ const handlers = {
   },
   revision_started(e) {
     const c = card(`revision ${e.revision} — reviewer rejected the draft`, "banner");
-    c.appendChild(el("pre", null,
-      (e.required_changes || []).map((x) => "• " + x).join("\n")));
+    const changes = e.required_changes || [];
+    // An empty list used to render as a blank box, which made the repeated
+    // write/review stages below look like the pipeline running twice for
+    // no reason. Say what the writer is being sent instead.
+    if (changes.length) {
+      c.appendChild(el("div", "meta", "sent back to the writer with the draft:"));
+      c.appendChild(el("pre", null, changes.map((x) => "• " + x).join("\n")));
+    } else {
+      c.appendChild(el("div", "meta",
+        "The reviewer named no changes — nothing to send back."));
+    }
   },
   run_finished(e) {
     runEnded = true;

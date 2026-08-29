@@ -122,22 +122,28 @@ class Workflow:
         review = await self._review(state, objective, research, draft)
 
         revisions = 0
-        while not review.approved and revisions < MAX_REVISIONS:
+        changes = _revision_notes(review)
+        # A rejection earns a revision only if it says what to change. With
+        # nothing to forward the writer gets back the input it just
+        # answered, so the second pass repeats the first — same draft, same
+        # write to disk, same rejection — and calls it a revision.
+        while not review.approved and changes and revisions < MAX_REVISIONS:
             revisions += 1
             self._tracer.emit(
                 "revision_started",
                 revision=revisions,
-                required_changes=review.required_changes,
+                required_changes=changes,
             )
             draft = await self._write_draft(
                 state,
                 objective,
                 research,
                 analysis,
-                revision_instructions=review.required_changes,
+                revision_instructions=changes,
                 previous_draft=draft,
             )
             review = await self._review(state, objective, research, draft)
+            changes = _revision_notes(review)
 
         state.status = "completed"
         state.final_answer = draft
@@ -279,3 +285,14 @@ class Workflow:
             ),
             response_type=ReviewResult,
         )
+
+
+def _revision_notes(review: ReviewResult) -> list[str]:
+    """What a revision pass would actually act on.
+
+    The reviewer files an objection under either key, and only
+    ``required_changes`` was ever forwarded — so a rejection that named its
+    problem under ``unsupported_statements`` bought a rewrite that carried
+    no instructions with it.
+    """
+    return review.required_changes or review.unsupported_statements
